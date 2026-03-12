@@ -11,7 +11,7 @@ Here is the comprehensive documentation for the features and technical integrati
 * **API Framework:** FastAPI — high-performance, async delivery layer for WebSocket streaming, REST endpoints, and horizontal scaling.
 * **AI Orchestration:** LangChain + LangGraph — LangGraph as the primary orchestration layer; LangChain for sub-flows (prompts, RAG). Google Gemini API powers the LLM.
 * **Speech SDKs:** Sarvam AI — `sarvamai` Python package (`pip install sarvamai`). Saaras V3 for STT, Bulbul V3 for TTS. Both support WebSocket streaming for low latency.
-* **Additional Resources:** Pydantic (validation), Uvicorn (ASGI server), `sounddevice` or `pyaudio` for live mic capture (CLI phase).
+* **Additional Resources:** Pydantic (validation), Uvicorn (ASGI server), `sounddevice` (mic capture & playback), `webrtcvad` (voice activity detection), `soundfile` (audio I/O).
 
 ---
 
@@ -26,16 +26,24 @@ Here is the comprehensive documentation for the features and technical integrati
 
 ## Phase 0: CLI Voice Loop (Current Scope)
 
-* **Goal:** Run from terminal → speak (Hindi/English/Hinglish) → hear AI response. No web frontend.
+* **Goal:** Run from terminal → speak (Hindi/English/Hinglish) → hear AI response. No web frontend. Hands-free natural conversation.
+* **Voice Modes:**
+  - **`natural` (default):** VAD-based, hands-free. The mic listens continuously, detects when you start speaking, records your utterance, and stops automatically after ~1.5 seconds of silence. No key presses needed — just talk.
+  - **`manual`:** Press Enter to start recording, Enter again to stop. Useful as a fallback if your environment is too noisy for VAD.
 * **Flow:**
-  1. **Mic capture** → Raw audio chunks (WAV or PCM, 16kHz) from local microphone via `sounddevice` or `pyaudio`.
-  2. **Saaras V3 (STT)** → Sarvam streaming API (`client.speech_to_text_streaming.connect` with `model="saaras:v3"`). Use `mode="codemix"` for Hinglish or `mode="transcribe"` for single-language. VAD (voice activity detection) or manual flush to determine end-of-utterance.
-  3. **LangChain + LangGraph + Gemini** → Transcribed text → Gemini via `ChatGoogleGenerativeAI` → generates reply. LangGraph orchestrates flow (for now, a minimal graph or simple chain).
-  4. **Bulbul V3 (TTS)** → Sarvam streaming API (`client.text_to_speech_streaming.connect` with `model="bulbul:v3"`). Configure `target_language_code` (e.g., `hi-IN`, `en-IN`) and `speaker` (e.g., `shubh`). Stream audio chunks back.
-  5. **Playback** → Output audio to speakers (e.g., via `sounddevice`, `pyaudio`, or `pygame`).
-* **Sarvam SDK Notes:**
-  - **STT:** `AsyncSarvamAI` → `speech_to_text_streaming.connect(model="saaras:v3", mode="codemix", language_code="hi-IN", high_vad_sensitivity=True)`. Audio formats: WAV or raw PCM (`pcm_s16le`). Sample rate must match in connection and `transcribe()` call (16kHz recommended).
-  - **TTS:** `text_to_speech_streaming.connect(model="bulbul:v3")` → `configure(target_language_code, speaker)` → `convert(text)` → `flush()` → iterate `async for message in ws` for `AudioOutput` chunks (base64-decoded). Speakers: Shubh, Aditya, Ritu, Priya, etc. Languages: `hi-IN`, `en-IN`, and 9 other Indian languages.
+  1. **Mic capture** → Persistent `sounddevice.InputStream` streams 20ms audio frames (16kHz, mono, 16-bit) from the selected microphone.
+  2. **Voice Activity Detection (VAD)** → `webrtcvad` (aggressiveness 3) classifies each frame as speech or silence. Recording requires 5 consecutive speech-positive frames (~100ms) before committing — isolated noise spikes are ignored. A pre-buffer preserves the audio just before speech onset so no words are clipped.
+  3. **Saaras V3 (STT)** → Sarvam REST API (`client.speech_to_text.transcribe` with `model="saaras:v3"`). Uses `mode="codemix"` for Hinglish support and `language_code="hi-IN"`.
+  4. **Gemini (LLM)** → Transcribed text → Google Gemini (`gemini-3.1-flash-lite-preview`) via LangChain `ChatGoogleGenerativeAI` → generates reply with conversation history.
+  5. **Bulbul V3 (TTS)** → Sarvam TTS (`model="bulbul:v3"`, speaker `shubh`, `target_language_code="hi-IN"`). Converts reply text to speech audio.
+  6. **Playback** → Audio played back through speakers via `sounddevice`.
+  7. **Loop** → After playback, mic reopens and waits indefinitely for the next utterance. No timeout before speech — you can pause for any duration between turns.
+* **VAD Details:**
+  - Uses `webrtcvad` at aggressiveness level 3 (strictest, least likely to false-trigger on ambient noise).
+  - Requires 5 consecutive speech frames (~100ms) before recording starts — prevents background noise from triggering false recordings.
+  - Stops recording after 1.5 seconds of continuous silence following speech.
+  - Safety cap of 30 seconds per utterance (starts counting from first speech, not from mic open).
+  - Pre-buffer (600ms) captures audio just before detected speech onset, so the beginning of your sentence is never lost.
 
 ### Running Phase 0
 
@@ -43,6 +51,8 @@ Here is the comprehensive documentation for the features and technical integrati
 # 1. Create .env and add your API keys (copy from .env.example)
 #    SARVAM_API_KEY=...
 #    GOOGLE_API_KEY=...
+#    BODHI_VOICE_MODE=natural        # or "manual" for Enter-to-record
+#    BODHI_INPUT_DEVICE=             # optional: device index (run list_input_devices to find yours)
 
 # 2. Create a virtual environment (recommended)
 python -m venv .venv
@@ -52,11 +62,16 @@ python -m venv .venv
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Run the voice loop (from project root)
+# 4. (Optional) List available microphones to find your device index
+python -c "from src.audio import list_input_devices; list_input_devices()"
+
+# 5. Run the voice loop (from project root)
 python -m src.main
 ```
 
-**Flow:** Press Enter → start recording → speak (Hindi/English/Hinglish) → Press Enter to stop → transcript → Gemini reply → TTS playback. Repeat. Ctrl+C to exit.
+**Natural mode:** Just speak → VAD detects speech → records → stops after 1.5s silence → transcribes → Gemini reply → TTS playback → waits for next utterance. Ctrl+C to exit.
+
+**Manual mode:** Press Enter → start recording → speak → Press Enter to stop → transcribes → Gemini reply → TTS playback. Repeat. Ctrl+C to exit.
 
 ---
 
@@ -151,7 +166,7 @@ The "HR Bot" is programmed to be a "tough but fair" interviewer.
 | Feature | Technology | Primary Benefit |
 | --- | --- | --- |
 | **Backend** | Python + FastAPI | Async API, WebSocket streaming, production-ready delivery. |
-| **Phase 0 Voice** | Sarvam SDK (Saaras + Bulbul) + Gemini | CLI: speak → transcribe → Gemini reply → TTS playback. |
+| **Phase 0 Voice** | Sarvam SDK + Gemini + webrtcvad | Hands-free VAD voice loop: speak → auto-detect → transcribe → reply → TTS. |
 | **Orchestration** | LangChain + LangGraph | Stateful workflow; section transitions; tool invocation (e.g., code editor). |
 | **Intelligence Device** | RAG + Entity DB | Crowdsourced company/role data; grounds interviews in real hiring patterns. |
 | **Bilingual Voice** | Saaras V3 + Bulbul V3 | Natural, low-latency Hinglish conversation. |
@@ -170,9 +185,9 @@ The "HR Bot" is programmed to be a "tough but fair" interviewer.
 
 3. **TTS speaker & language:** Preferred Bulbul speaker (e.g., Shubh, Priya, Aditya)? Should TTS mirror the user's input language, or always output in a fixed language (e.g., Hinglish)?
 
-4. **End-of-speech trigger:** For CLI, how should we detect "user finished speaking"? Options: (a) VAD + silence (Sarvam's `high_vad_sensitivity` + `speech_end`), (b) manual push-to-talk (press key to stop), or (c) fixed timeout after last speech?
+4. **End-of-speech trigger:** ~~Resolved~~ — Using `webrtcvad` (aggressiveness 3) with 5-frame speech confirmation and 1.5s silence cutoff. Manual Enter-to-record available as fallback via `BODHI_VOICE_MODE=manual`.
 
-5. **Gemini model:** Use `gemini-1.5-flash` (faster, cheaper, 1M context) or `gemini-1.5-pro` (smarter, slower)? Or `gemini-2.0-flash` if available in your region?
+5. **Gemini model:** Currently using `gemini-3.1-flash-lite-preview`. Consider `gemini-1.5-flash` (1M context) or `gemini-1.5-pro` for later phases.
 
 6. **Persona in Phase 0:** For the initial CLI loop, should the AI already behave as the "HR interviewer" (tough but fair), or as a generic conversational assistant for now?
 
