@@ -1,0 +1,197 @@
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, init);
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`${res.status}: ${text}`);
+  }
+  if (res.status === 204) return undefined as unknown as T;
+  return res.json();
+}
+
+// ── Roles ────────────────────────────────────────────────
+
+export interface Role {
+  id: number;
+  role_name: string;
+  description: string;
+  focus_areas: string;
+  typical_topics: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const listRoles = () => request<Role[]>("/api/roles");
+
+export const createRole = (data: {
+  role_name: string;
+  description?: string;
+  focus_areas?: string;
+  typical_topics?: string;
+}) =>
+  request<Role>("/api/roles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+export const deleteRole = (name: string) =>
+  request<void>(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" });
+
+// ── Companies ────────────────────────────────────────────
+
+export interface CompanyProfile {
+  id: number;
+  company_name: string;
+  role: string;
+  description: string | null;
+  hiring_patterns: string | null;
+  tech_stack: string | null;
+  contributed_by: string | null;
+  updated_at: string;
+}
+
+export const listCompanies = () => request<CompanyProfile[]>("/api/companies");
+
+export const createCompany = (data: {
+  company_name: string;
+  role?: string;
+  description?: string;
+  hiring_patterns?: string;
+  tech_stack?: string;
+}) =>
+  request<CompanyProfile>("/api/companies", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+export const deleteCompany = (name: string, role: string) =>
+  request<void>(
+    `/api/companies/${encodeURIComponent(name)}/${encodeURIComponent(role)}`,
+    { method: "DELETE" }
+  );
+
+// ── Documents ────────────────────────────────────────────
+
+export interface IngestResponse {
+  chunks_ingested: number;
+}
+export interface UploadResponse {
+  chunks_ingested: number;
+  topics_extracted: string[];
+}
+export interface SearchResult {
+  chunk_text: string;
+  similarity: number;
+}
+export interface TopicsResponse {
+  company: string;
+  role: string;
+  topics: string[];
+}
+
+export const ingestText = (data: {
+  company: string;
+  role?: string;
+  text: string;
+  source_label?: string;
+}) =>
+  request<IngestResponse>("/api/documents/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+export const uploadFile = (company: string, role: string, file: File) => {
+  const form = new FormData();
+  form.append("company", company);
+  form.append("role", role);
+  form.append("file", file);
+  return request<UploadResponse>("/api/documents/upload", {
+    method: "POST",
+    body: form,
+  });
+};
+
+export const searchDocs = (params: {
+  company: string;
+  role?: string;
+  query: string;
+  top_k?: number;
+}) => {
+  const sp = new URLSearchParams({
+    company: params.company,
+    role: params.role ?? "general",
+    query: params.query,
+  });
+  if (params.top_k) sp.set("top_k", String(params.top_k));
+  return request<SearchResult[]>(`/api/documents/search?${sp}`);
+};
+
+export const getTopics = (company: string, role: string) =>
+  request<TopicsResponse>(
+    `/api/documents/topics?company=${encodeURIComponent(company)}&role=${encodeURIComponent(role)}`
+  );
+
+// ── Interviews ───────────────────────────────────────────
+
+export interface InterviewStart {
+  session_id: string;
+  greeting_text: string;
+  greeting_audio_b64: string;
+}
+export interface MessageReply {
+  transcript: string;
+  reply_text: string;
+  reply_audio_b64: string;
+  phase: string;
+  should_end: boolean;
+}
+export interface SessionState {
+  session_id: string;
+  phase: string;
+  difficulty_level: number;
+  phase_scores: Record<string, unknown>;
+  company: string;
+  role: string;
+}
+export interface SessionEnd {
+  session_id: string;
+  summary: string;
+  overall_score: number | null;
+}
+
+export const startInterview = (data: {
+  candidate_name?: string;
+  company?: string;
+  role?: string;
+}) =>
+  request<InterviewStart>("/api/interviews", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+export const sendMessage = (sessionId: string, text: string) =>
+  request<MessageReply>(`/api/interviews/${sessionId}/message`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+
+export const sendAudio = (sessionId: string, blob: Blob, filename = "audio.webm") => {
+  const form = new FormData();
+  form.append("file", blob, filename);
+  return request<MessageReply>(`/api/interviews/${sessionId}/audio`, {
+    method: "POST",
+    body: form,
+  });
+};
+
+export const getSession = (sessionId: string) =>
+  request<SessionState>(`/api/interviews/${sessionId}`);
+
+export const endInterview = (sessionId: string) =>
+  request<SessionEnd>(`/api/interviews/${sessionId}/end`, { method: "POST" });
