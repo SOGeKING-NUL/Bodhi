@@ -40,7 +40,7 @@ interface Violation {
   timestamp: string;
 }
 
-const SILENCE_THRESHOLD = 0.015;
+const SILENCE_THRESHOLD = 0.01;
 const SILENCE_DURATION_MS = 1500;
 const SPEECH_CONFIRM_FRAMES = 5;
 const MIN_RECORD_MS = 500;
@@ -62,6 +62,8 @@ export default function InterviewPage() {
   const [summary, setSummary] = useState<SessionEnd | null>(null);
   const [level, setLevel] = useState(0);
   const [error, setError] = useState("");
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioDevice, setSelectedAudioDevice] = useState<string>("");
 
   // Proctoring state
   const [proctoringActive, setProctoringActive] = useState(false);
@@ -96,6 +98,7 @@ export default function InterviewPage() {
   // Audio refs
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const workletRef = useRef<ScriptProcessorNode | null>(null);
   const samplesRef = useRef<Float32Array[]>([]);
@@ -327,9 +330,17 @@ export default function InterviewPage() {
   // ── Mic setup ──────────────────────────────────────────────────────────────
 
   const initMic = useCallback(async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    let constraints: MediaStreamConstraints = {
       audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
-    });
+    };
+    if (selectedAudioDevice) {
+      constraints.audio = {
+        ...constraints.audio as MediaTrackConstraints,
+        deviceId: { exact: selectedAudioDevice },
+      };
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
     const ctx = new AudioContext({ sampleRate: 16000 });
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
@@ -347,6 +358,7 @@ export default function InterviewPage() {
 
     audioCtxRef.current = ctx;
     streamRef.current = stream;
+    sourceRef.current = source;
     analyserRef.current = analyser;
     workletRef.current = processor;
   }, []);
@@ -354,10 +366,12 @@ export default function InterviewPage() {
   const cleanupMic = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
     workletRef.current?.disconnect();
+    sourceRef.current?.disconnect();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     audioCtxRef.current?.close();
     audioCtxRef.current = null;
     streamRef.current = null;
+    sourceRef.current = null;
     analyserRef.current = null;
     workletRef.current = null;
   }, []);
@@ -459,6 +473,10 @@ export default function InterviewPage() {
   // ── VAD loop ───────────────────────────────────────────────────────────────
 
   const startListening = useCallback(() => {
+    if (audioCtxRef.current?.state === "suspended") {
+      audioCtxRef.current.resume().catch(console.warn);
+    }
+
     setPhase("listening");
     phaseRef.current = "listening";
     isRecordingRef.current = false;
@@ -656,6 +674,19 @@ export default function InterviewPage() {
     };
   }, [cleanupMic, cleanupCamera, endProctoringSession]);
 
+  // Enumerate devices when in setup mode
+  useEffect(() => {
+    if (phase === "setup") {
+      navigator.mediaDevices.enumerateDevices().then((devices) => {
+        const audioInputs = devices.filter((d) => d.kind === "audioinput");
+        setAudioDevices(audioInputs);
+        if (audioInputs.length > 0 && !selectedAudioDevice) {
+          setSelectedAudioDevice(audioInputs[0].deviceId);
+        }
+      }).catch(console.warn);
+    }
+  }, [phase, selectedAudioDevice]);
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const inputCls =
@@ -770,7 +801,27 @@ export default function InterviewPage() {
         {/* Step 1: Consent */}
         <ConsentNotice accepted={consentAccepted} onAccept={setConsentAccepted} />
 
-        {/* Step 2: Reference photo */}
+        {/* Step 2: Audio Device Setup */}
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4">
+          <h2 className="mb-2 text-sm font-semibold">Microphone</h2>
+          <select 
+            value={selectedAudioDevice} 
+            onChange={(e) => setSelectedAudioDevice(e.target.value)}
+            className="w-full rounded border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-zinc-200"
+          >
+            {audioDevices.length === 0 && <option value="">Loading devices...</option>}
+            {audioDevices.map((d) => (
+               <option key={d.deviceId} value={d.deviceId}>
+                 {d.label || `Microphone ${d.deviceId.slice(0, 5)}...`}
+               </option>
+            ))}
+          </select>
+          <p className="mt-2 text-xs text-zinc-500">
+            Please ensure you select your correct working microphone (e.g., your headset if using Bluetooth).
+          </p>
+        </div>
+
+        {/* Step 3: Reference photo */}
         <ReferencePhotoCapture
           onReady={setReferencePhotoB64}
           modelsLoading={faceVerification.modelsLoading}
