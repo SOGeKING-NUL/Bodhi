@@ -122,6 +122,7 @@ from src.api.interviews import router as interviews_router
 from src.api.audio import router as audio_router
 from src.api.proctoring import router as proctoring_router
 from src.api.resumes import router as resumes_router
+from src.api.users import router as users_router
 
 app.include_router(roles_router)
 app.include_router(companies_router)
@@ -130,6 +131,7 @@ app.include_router(interviews_router)
 app.include_router(audio_router)
 app.include_router(proctoring_router)
 app.include_router(resumes_router)
+app.include_router(users_router)
 
 
 @app.get("/health")
