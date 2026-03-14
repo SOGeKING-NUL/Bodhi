@@ -304,6 +304,8 @@ export interface StreamMeta {
   transcript?: string;
   phase?: string;
   shouldEnd?: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sentiment?: Record<string, any>;
 }
 
 /** Extract X-Bodhi-* headers from a streaming response, URL-decoding values. */
@@ -312,12 +314,24 @@ export function parseStreamHeaders(res: Response): StreamMeta {
     const v = res.headers.get(`X-Bodhi-${key}`);
     return v ? decodeURIComponent(v) : undefined;
   };
+
+  let sentiment: Record<string, unknown> | undefined;
+  const rawSentiment = d("Sentiment");
+  if (rawSentiment) {
+    try {
+      sentiment = JSON.parse(rawSentiment);
+    } catch {
+      // ignore malformed sentiment header
+    }
+  }
+
   return {
     session: d("Session"),
     text: d("Text"),
     transcript: d("Transcript"),
     phase: d("Phase"),
     shouldEnd: d("End") === "true",
+    sentiment,
   };
 }
 
@@ -329,6 +343,7 @@ export const startInterviewStream = async (data: {
   mode?: "standard" | "option_a" | "option_b";
   user_id?: string;
   jd_text?: string;
+  interviewer_persona?: "bodhi" | "riya";
 }) => {
   const headers = await getAuthHeaders({ "Content-Type": "application/json" });
   return fetch(`${BASE}/api/interviews/start-stream`, {

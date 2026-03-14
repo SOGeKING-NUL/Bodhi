@@ -5,8 +5,11 @@ import { useRouter } from "next/navigation"
 import Navbar from "@/components/Navbar"
 import { PageHeader } from "@/components/ui/page-header"
 import { InterviewSetupForm, type InterviewFormData } from "@/components/interview/InterviewSetupForm"
+import { TranscriptView } from "@/components/interview/TranscriptView"
+import { StatusIndicator } from "@/components/interview/StatusIndicator"
+import { SessionInfoCard } from "@/components/interview/SessionInfoCard"
+import { ProctoringPanel } from "@/components/interview/ProctoringPanel"
 import { InterviewSummary } from "@/components/interview/InterviewSummary"
-import { InterviewSessionView } from "@/components/interview/InterviewSessionView"
 import { useInterviewAudio } from "@/hooks/useInterviewAudio"
 import { useProctoring } from "@/hooks/useProctoring"
 import { useSentimentAnalysis } from "@/hooks/useSentimentAnalysis"
@@ -14,27 +17,25 @@ import {
   type SessionState,
   type SessionEnd,
   type StreamMeta,
-  type CandidateProfile,
   type InterviewReport,
   startInterviewStream,
   sendAudioStream,
   parseStreamHeaders,
   getSession,
   endInterview,
-  uploadResume,
-  getInterviewReport,
   downloadReportPDF,
 } from "@/lib/api";
-import { encodeWav } from "@/lib/wav";
 import ReportPreview from "@/components/ReportPreview";
 
-type Phase = "idle" | "setup" | "listening" | "recording" | "processing" | "speaking" | "ended"
+type Phase = "idle" | "listening" | "recording" | "processing" | "speaking" | "ended"
 
 interface Turn {
   speaker: "user" | "bodhi"
   text: string
   phase?: string
 }
+
+const SILENCE_THRESHOLD = 0.015
 
 export default function InterviewPage() {
   const router = useRouter()
@@ -68,6 +69,21 @@ export default function InterviewPage() {
     sessionIdRef.current = sessionId
   }, [sessionId])
 
+  // Re-attach camera stream to video element after phase transition
+  // When phase changes from "idle" to an active state, the grid layout
+  // (with ProctoringPanel containing <video ref={videoRef}>) mounts.
+  // The camera stream was already obtained by initCamera() but the
+  // <video> element was not yet in the DOM, so we need to re-apply it.
+  useEffect(() => {
+    if (phase !== "idle" && phase !== "ended") {
+      // Small delay to ensure React has committed the DOM update
+      const timer = setTimeout(() => {
+        proctoring.reattachStream()
+      }, 100)
+      return () => clearTimeout(timer)
+    }
+  }, [phase, proctoring])
+
   // URL params - auto-start if present
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -90,9 +106,11 @@ export default function InterviewPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
   const refreshSession = useCallback(async () => {
     try {
-      await getSession(sessionIdRef.current)
+      const info = await getSession(sessionIdRef.current)
+      setSessionInfo(info)
     } catch { }
   }, [])
 
@@ -108,15 +126,16 @@ export default function InterviewPage() {
     }
 
     try {
-      // Send audio for sentiment analysis (non-blocking)
-      sentiment.analyzeSpeech(wavBlob).catch(err => {
-        console.warn("Sentiment analysis failed:", err)
-      })
-
       const res = await sendAudioStream(sessionIdRef.current, wavBlob, "recording.wav")
       if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`)
 
       const meta: StreamMeta = parseStreamHeaders(res)
+
+      // Update sentiment data from streaming response headers
+      if (meta.sentiment) {
+        sentiment.updateFromMeta(meta)
+      }
+
       if (meta.transcript) setTranscript((prev) => [...prev, { speaker: "user", text: meta.transcript! }])
       if (meta.text) setTranscript((prev) => [...prev, { speaker: "bodhi", text: meta.text!, phase: meta.phase }])
 
@@ -144,7 +163,7 @@ export default function InterviewPage() {
       setError(String(err))
       audio.startListening(() => setPhase("listening"), () => setPhase("recording"), finishRecording)
     }
-  }, [audio, proctoring, refreshSession, sentiment])
+  }, [audio, proctoring, refreshSession, sentiment, router])
 
   const handleFormSubmit = async (data: InterviewFormData) => {
     setFormData(data)
@@ -153,7 +172,11 @@ export default function InterviewPage() {
     try {
       await proctoring.initCamera()
       await audio.initMic()
-      const res = await startInterviewStream(data)
+      // Pass interviewer_persona so backend uses the chosen voice/prompt
+      const res = await startInterviewStream({
+        ...data,
+        interviewer_persona: data.interviewer_persona ?? "bodhi",
+      })
       if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`)
 
       const meta: StreamMeta = parseStreamHeaders(res)
@@ -201,7 +224,7 @@ export default function InterviewPage() {
     router.push(`/report/${sessionIdRef.current}`)
   }
 
-  // Cleanup
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       audio.cleanup()
@@ -209,14 +232,13 @@ export default function InterviewPage() {
       proctoring.endSession()
       sentiment.reset()
     }
-  }, [audio, proctoring, sentiment])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-
-
-  // Render: Idle (Setup Form)
+  // ── Render: Setup Form ──────────────────────────────────
   if (phase === "idle") {
     return (
-      <div className="min-h-screen bg-background">
+      <div className="min-h-screen bg-[#F7F5F3]">
         <Navbar />
         <div className="mx-auto max-w-lg space-y-6 pt-28 px-4 pb-12">
           <PageHeader
@@ -224,11 +246,11 @@ export default function InterviewPage() {
             description="Hands-free voice conversation. Speak naturally — your interviewer listens, responds, and loops."
           />
           {error && (
-            <div className="rounded-xl border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive animate-fade-in-up">
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 animate-fade-in-up">
               {error}
             </div>
           )}
-          <div className="rounded-2xl border border-border bg-card p-6 shadow-sm animate-fade-in-up">
+          <div className="rounded-2xl border border-[rgba(55,50,47,0.10)] bg-white p-6 shadow-[0px_2px_8px_rgba(55,50,47,0.06)] animate-fade-in-up">
             <InterviewSetupForm onSubmit={handleFormSubmit} loading={phase !== "idle"} />
           </div>
         </div>
@@ -236,35 +258,95 @@ export default function InterviewPage() {
     )
   }
 
-  // Render: Active Interview - Show summary if ended, otherwise show session view
-  if (phase === "ended" && summary) {
-    return (
-      <div className="min-h-screen bg-background">
-        <Navbar />
-        <div className="pt-24 pb-8 px-4 sm:px-6 max-w-7xl mx-auto">
-          <InterviewSummary summary={summary} />
-        </div>
-      </div>
-    )
-  }
-
-  // Render: Active Interview Session (no navbar, full screen)
+  // ── Render: Active Interview ─────────────────────────────
   return (
-    <>
+    <div className="min-h-screen bg-[#F7F5F3]">
+      <Navbar />
+      {/* Hidden canvas for proctoring snapshots */}
       <canvas ref={canvasRef} className="hidden" />
-      <InterviewSessionView
-        sessionId={sessionId}
-        videoRef={videoRef}
-        transcript={transcript}
-        phase={phase}
-        onEndSession={handleEnd}
-        proctoringActive={proctoring.proctoringActive}
-        sessionFlagged={proctoring.sessionFlagged}
-        cameraError={proctoring.cameraError}
-        sentimentData={sentiment.sentimentData}
-        violationCount={proctoring.violations.length}
-        interviewerPersona={formData?.interviewer_persona}
-      />
-    </>
+
+      <div className="pt-24 pb-8 px-4 sm:px-6 max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="mb-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-[#37322F]">
+              {phase === "ended" ? "Interview Complete" : "Live Interview"}
+            </h1>
+            {sessionId && (
+              <p className="text-sm text-[rgba(55,50,47,0.5)] mt-1">
+                Session: {sessionId.slice(0, 12)}...
+              </p>
+            )}
+          </div>
+          {phase !== "ended" && (
+            <button
+              onClick={handleEnd}
+              className="rounded-full bg-red-500 px-5 py-2 text-sm font-semibold text-white hover:bg-red-600 transition-all duration-200 hover:shadow-[0px_4px_12px_rgba(239,68,68,0.3)] hover:scale-105"
+            >
+              End Interview
+            </button>
+          )}
+        </div>
+
+        {error && (
+          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 animate-fade-in-up">
+            {error}
+          </div>
+        )}
+
+        {/* ── Ended + Summary ───────────────────────────── */}
+        {phase === "ended" && summary && (
+          <InterviewSummary summary={summary} />
+        )}
+
+        {/* ── Active Session Grid ───────────────────────── */}
+        {phase !== "ended" && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Main: Status + Transcript */}
+            <div className="lg:col-span-2 space-y-4">
+              <StatusIndicator
+                phase={phase}
+                level={audio.level}
+                silenceThreshold={SILENCE_THRESHOLD}
+              />
+              <TranscriptView
+                transcript={transcript}
+                isProcessing={phase === "processing"}
+                interviewerPersona={formData?.interviewer_persona ?? "bodhi"}
+              />
+              {loadingReport && (
+                <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-6 text-center animate-pulse">
+                  <p className="text-sm font-medium text-blue-700">Generating comprehensive report...</p>
+                  <p className="text-xs text-blue-500 mt-2">This may take a few moments</p>
+                </div>
+              )}
+              {report && (
+                <div className="mt-6 animate-fade-in-up">
+                  <ReportPreview report={report} onDownloadPDF={handleDownloadPDF} downloading={downloadingPDF} />
+                </div>
+              )}
+            </div>
+
+            {/* Sidebar: Proctoring + Session Info */}
+            <div className="space-y-4">
+              <ProctoringPanel
+                videoRef={videoRef}
+                proctoringActive={proctoring.proctoringActive}
+                sessionFlagged={proctoring.sessionFlagged}
+                violations={proctoring.violations}
+                cameraError={proctoring.cameraError}
+                sentimentData={sentiment.sentimentData}
+                faceVerification={{
+                  isActive: false,
+                  lastScore: null,
+                  consecutiveMismatches: 0,
+                }}
+              />
+              <SessionInfoCard sessionInfo={sessionInfo} sessionId={sessionId} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }

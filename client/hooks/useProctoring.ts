@@ -40,24 +40,48 @@ export function useProctoring(
   }, [videoRef])
 
   const cleanupCamera = useCallback(() => {
+    // Stop frame interval
     if (frameIntervalRef.current) {
       clearInterval(frameIntervalRef.current)
       frameIntervalRef.current = null
     }
-    cameraStreamRef.current?.getTracks().forEach((t) => t.stop())
-    cameraStreamRef.current = null
-  }, [])
+    
+    // Stop all video tracks properly
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((track) => {
+        track.stop()
+        track.enabled = false
+      })
+      cameraStreamRef.current = null
+    }
+    
+    // Clear video element
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+      videoRef.current.load()
+    }
+  }, [videoRef])
 
   const captureFrame = useCallback((): string | null => {
     const video = videoRef.current
     const canvas = canvasRef.current
     if (!video || !canvas || video.readyState < 2) return null
-    canvas.width = video.videoWidth || 640
-    canvas.height = video.videoHeight || 480
-    const ctx = canvas.getContext("2d")
+    
+    // Only update canvas dimensions if they've changed
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth || 640
+      canvas.height = video.videoHeight || 480
+    }
+    
+    const ctx = canvas.getContext("2d", { willReadFrequently: false })
     if (!ctx) return null
+    
+    // Optimize canvas operations
+    ctx.imageSmoothingEnabled = false
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    return canvas.toDataURL("image/jpeg", 0.8).split(",")[1]
+    
+    // Use lower quality for better performance (0.6 instead of 0.8)
+    return canvas.toDataURL("image/jpeg", 0.6).split(",")[1]
   }, [videoRef, canvasRef])
 
   const connectWebSocket = useCallback(
@@ -116,6 +140,24 @@ export function useProctoring(
     proctoringWsRef.current = null
   }, [])
 
+  /**
+   * Re-attach the saved camera stream to the video element.
+   * Call this after the <video> element has mounted in the DOM
+   * (e.g. after a phase transition that causes a re-render).
+   */
+  const reattachStream = useCallback(() => {
+    const video = videoRef.current
+    const stream = cameraStreamRef.current
+    if (video && stream && !video.srcObject) {
+      video.srcObject = stream
+      video.play().catch(() => {})
+    }
+  }, [videoRef])
+
+  // Stubs for face verification compatibility
+  const handleFaceViolation = useCallback(() => {}, [])
+  const handleFaceFlag = useCallback(() => {}, [])
+
   return {
     proctoringActive,
     sessionFlagged,
@@ -125,5 +167,8 @@ export function useProctoring(
     cleanupCamera,
     connectWebSocket,
     endSession,
+    reattachStream,
+    handleFaceViolation,
+    handleFaceFlag,
   }
 }

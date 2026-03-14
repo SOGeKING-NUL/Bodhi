@@ -816,7 +816,7 @@ class BodhiStorage:
         with self.conn.cursor() as cur:
             cur.execute(
                 "SELECT user_id::text, "
-                "(resume_raw_text <> '' AND professional_summary <> '{}'::jsonb) AS has_resume "
+                "(resume_raw_text IS NOT NULL AND resume_raw_text <> '') AS has_resume "
                 "FROM user_profiles WHERE clerk_user_id = %s",
                 (clerk_user_id,),
             )
@@ -824,6 +824,7 @@ class BodhiStorage:
             if not row:
                 return None
             return row[0], bool(row[1])
+
 
     def get_user_profile(self, user_id: str) -> dict | None:
         """Fetch a stored user profile by UUID. Returns None if not found or invalid UUID."""
