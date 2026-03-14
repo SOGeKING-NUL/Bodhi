@@ -5,11 +5,13 @@ import {
   type SessionState,
   type SessionEnd,
   type StreamMeta,
+  type CandidateProfile,
   startInterviewStream,
   sendAudioStream,
   parseStreamHeaders,
   getSession,
   endInterview,
+  uploadResume,
 } from "@/lib/api";
 import { encodeWav } from "@/lib/wav";
 
@@ -66,10 +68,17 @@ export default function InterviewPage() {
     candidate_name: "",
     company: "",
     role: "Software Engineer",
+    mode: "standard" as "standard" | "option_a" | "option_b",
+    user_id: "",
+    jd_text: "",
     mode: "standard",
     user_id: "",
     jd_text: "",
   });
+
+  // Resume upload state
+  const [uploading, setUploading] = useState(false);
+  const [uploadedProfile, setUploadedProfile] = useState<CandidateProfile | null>(null);
 
   // Audio refs
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -620,6 +629,46 @@ export default function InterviewPage() {
     cleanupCamera();
   };
 
+  // ── Handle resume upload ──────────────────────────────
+
+  const handleResumeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    setError("");
+
+    try {
+      const result = await uploadResume(file);
+      setUploadedProfile(result.profile);
+      setStartForm((prev) => ({
+        ...prev,
+        user_id: result.user_id,
+        candidate_name: result.profile.name || prev.candidate_name,
+      }));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // ── Load URL params ────────────────────────────────────
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get("mode") as "option_a" | "option_b" | null;
+    const userId = params.get("user_id");
+    
+    if (mode && userId) {
+      setStartForm((prev) => ({
+        ...prev,
+        mode: mode,
+        user_id: userId,
+      }));
+    }
+  }, []);
+
   // ── Cleanup on unmount ─────────────────────────────────
 
   useEffect(() => {
@@ -652,6 +701,85 @@ export default function InterviewPage() {
           onSubmit={handleStart}
           className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--card)] p-5"
         >
+          <div>
+            <label className="block text-xs text-zinc-400 mb-1">Interview Mode</label>
+            <select
+              value={startForm.mode}
+              onChange={(e) => {
+                setStartForm({ ...startForm, mode: e.target.value as any });
+                setUploadedProfile(null);
+                setError("");
+              }}
+              className={inputCls}
+            >
+              <option value="standard">Standard (Company-based)</option>
+              <option value="option_a">Resume-Based</option>
+              <option value="option_b">JD-Targeted</option>
+            </select>
+          </div>
+
+          {startForm.mode !== "standard" && !startForm.user_id && (
+            <div className="space-y-2">
+              <label className="block text-xs text-zinc-400">
+                Upload Your Resume (PDF or DOCX)
+              </label>
+              <input
+                type="file"
+                accept=".pdf,.docx"
+                onChange={handleResumeUpload}
+                disabled={uploading}
+                className="w-full rounded border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm file:mr-4 file:rounded file:border-0 file:bg-white file:px-3 file:py-1 file:text-xs file:font-medium file:text-black hover:file:bg-zinc-200 disabled:opacity-50"
+              />
+              {uploading && (
+                <p className="text-xs text-zinc-400">Uploading and parsing resume...</p>
+              )}
+            </div>
+          )}
+
+          {startForm.mode !== "standard" && uploadedProfile && (
+            <div className="rounded border border-green-700 bg-green-900/20 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-green-300">✓ Resume Uploaded</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUploadedProfile(null);
+                    setStartForm((prev) => ({ ...prev, user_id: "" }));
+                  }}
+                  className="text-xs text-zinc-400 hover:text-white"
+                >
+                  Change
+                </button>
+              </div>
+              <div className="text-xs text-zinc-300">
+                <p className="font-medium">{uploadedProfile.name}</p>
+                {uploadedProfile.email && <p className="text-zinc-400">{uploadedProfile.email}</p>}
+                {uploadedProfile.skills.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {uploadedProfile.skills.slice(0, 5).map((skill, i) => (
+                      <span key={i} className="rounded bg-white/10 px-1.5 py-0.5 text-[10px]">
+                        {skill}
+                      </span>
+                    ))}
+                    {uploadedProfile.skills.length > 5 && (
+                      <span className="text-[10px] text-zinc-500">
+                        +{uploadedProfile.skills.length - 5} more
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {startForm.mode !== "standard" && startForm.user_id && !uploadedProfile && (
+            <div className="rounded border border-[var(--border)] bg-[var(--card)] p-3">
+              <p className="text-xs text-zinc-400">
+                Using existing profile: <span className="font-mono text-zinc-300">{startForm.user_id}</span>
+              </p>
+            </div>
+          )}
+
           <input
             placeholder="Your name"
             value={startForm.candidate_name}
@@ -660,22 +788,40 @@ export default function InterviewPage() {
             }
             className={inputCls}
           />
-          <input
-            placeholder="Company"
-            value={startForm.company}
-            onChange={(e) =>
-              setStartForm({ ...startForm, company: e.target.value })
-            }
-            className={inputCls}
-          />
-          <input
-            placeholder="Role"
-            value={startForm.role}
-            onChange={(e) =>
-              setStartForm({ ...startForm, role: e.target.value })
-            }
-            className={inputCls}
-          />
+
+          {startForm.mode === "standard" && (
+            <>
+              <input
+                placeholder="Company"
+                value={startForm.company}
+                onChange={(e) =>
+                  setStartForm({ ...startForm, company: e.target.value })
+                }
+                className={inputCls}
+              />
+              <input
+                placeholder="Role"
+                value={startForm.role}
+                onChange={(e) =>
+                  setStartForm({ ...startForm, role: e.target.value })
+                }
+                className={inputCls}
+              />
+            </>
+          )}
+
+          {startForm.mode === "option_b" && (
+            <textarea
+              placeholder="Job Description (paste full JD text here)"
+              value={startForm.jd_text}
+              onChange={(e) =>
+                setStartForm({ ...startForm, jd_text: e.target.value })
+              }
+              className={`${inputCls} min-h-32`}
+              required
+            />
+          )}
+
           <div className="flex flex-col gap-3">
             <select
               value={startForm.mode}
