@@ -66,6 +66,10 @@ export default function InterviewPage() {
   // Sentiment state
   const [sentimentHistory, setSentimentHistory] = useState<SentimentEntry[]>([]);
 
+  // Mic device selection
+  const [micDeviceId, setMicDeviceId] = useState<string>("");
+  const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
+
   const [startForm, setStartForm] = useState<{
     candidate_name: string;
     company: string;
@@ -264,12 +268,39 @@ export default function InterviewPage() {
     []
   );
 
+  // ── Mic device enumeration ─────────────────────────────────────────────────
+
+  const refreshMicDevices = useCallback(async () => {
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      const inputs = all.filter((d) => d.kind === "audioinput");
+      setMicDevices(inputs);
+      setMicDeviceId((prev) => prev || inputs[0]?.deviceId || "");
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    refreshMicDevices();
+    navigator.mediaDevices.addEventListener("devicechange", refreshMicDevices);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", refreshMicDevices);
+  }, [refreshMicDevices]);
+
   // ── Mic setup ──────────────────────────────────────────────────────────────
 
   const initMic = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: 16000,
+        ...(micDeviceId ? { deviceId: { exact: micDeviceId } } : {}),
+      },
     });
+    // Permission just granted — re-enumerate so device labels populate
+    navigator.mediaDevices.enumerateDevices().then((all) => {
+      const inputs = all.filter((d) => d.kind === "audioinput");
+      setMicDevices(inputs);
+    }).catch(() => {});
     const ctx = new AudioContext({ sampleRate: 16000 });
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
@@ -289,7 +320,7 @@ export default function InterviewPage() {
     streamRef.current = stream;
     analyserRef.current = analyser;
     workletRef.current = processor;
-  }, []);
+  }, [micDeviceId]);
 
   const cleanupMic = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -461,7 +492,18 @@ export default function InterviewPage() {
     const wavBlob = encodeWav(merged, ctx?.sampleRate ?? 16000);
 
     try {
-      const res = await sendAudioStream(sessionIdRef.current, wavBlob, "recording.wav");
+      // Capture a webcam frame for posture analysis (best-effort — null if camera unavailable)
+      const frameBlob = await new Promise<Blob | undefined>((resolve) => {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (!canvas || !video || video.readyState < 2) { resolve(undefined); return; }
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((b) => resolve(b ?? undefined), "image/jpeg", 0.8);
+      });
+
+      const res = await sendAudioStream(sessionIdRef.current, wavBlob, "recording.wav", frameBlob);
       if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`);
 
       const meta: StreamMeta = parseStreamHeaders(res);
@@ -652,6 +694,21 @@ export default function InterviewPage() {
               className={`${inputCls} min-h-32`} required />
           )}
 
+          {/* Microphone selector */}
+          <div>
+            <label className="block text-xs text-zinc-400 mb-1">Microphone</label>
+            <select value={micDeviceId} onChange={(e) => setMicDeviceId(e.target.value)} className={inputCls}>
+              {micDevices.length === 0 && (
+                <option value="">Default microphone</option>
+              )}
+              {micDevices.map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Microphone ${i + 1}`}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <button type="submit"
             className="w-full rounded border border-white py-2.5 text-sm font-medium text-white transition hover:bg-white hover:text-black">
             Start Interview →
@@ -708,6 +765,17 @@ export default function InterviewPage() {
               ))}
             </div>
           )}
+          {phase === "recording" && (
+            <button
+              onClick={() => {
+                cancelAnimationFrame(rafRef.current);
+                isRecordingRef.current = false;
+                finishRecording();
+              }}
+              className="ml-auto rounded border border-zinc-600 px-3 py-1 text-xs text-zinc-300 hover:border-white hover:text-white transition">
+              Submit ↵
+            </button>
+          )}
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-5">
@@ -752,43 +820,95 @@ export default function InterviewPage() {
         {/* Sentiment / Tone */}
         {sentimentHistory.length > 0 && (() => {
           const latest = sentimentHistory[sentimentHistory.length - 1];
+
           const emotionColor: Record<string, string> = {
-            confident:    "text-green-400",
-            enthusiastic: "text-blue-400",
-            neutral:      "text-zinc-400",
-            hesitant:     "text-amber-400",
-            nervous:      "text-orange-400",
+            confident: "text-green-400", enthusiastic: "text-blue-400",
+            neutral: "text-zinc-400", hesitant: "text-amber-400", nervous: "text-orange-400",
+            joy: "text-green-400", fear: "text-orange-400", anger: "text-red-400",
+            sadness: "text-blue-300", disgust: "text-purple-400", surprise: "text-cyan-400",
           };
           const dotColor: Record<string, string> = {
-            confident:    "bg-green-400",
-            enthusiastic: "bg-blue-400",
-            neutral:      "bg-zinc-500",
-            hesitant:     "bg-amber-400",
-            nervous:      "bg-orange-400",
+            confident: "bg-green-400", enthusiastic: "bg-blue-400",
+            neutral: "bg-zinc-500", hesitant: "bg-amber-400", nervous: "bg-orange-400",
           };
+          const sentimentBadge: Record<string, string> = {
+            positive: "text-green-400", neutral: "text-zinc-400", negative: "text-red-400",
+          };
+          const postureColor: Record<string, string> = {
+            upright: "text-green-400", slouching: "text-amber-400",
+            leaning_away: "text-orange-400", looking_away: "text-red-400",
+            face_not_visible: "text-zinc-500",
+          };
+
+          // Use HF emotion if available, fall back to rule-based
+          const displayEmotion = latest.hf_emotion ?? latest.emotion;
+
           return (
             <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 text-xs">
               <h3 className="mb-2 text-xs font-semibold text-zinc-300">Tone Analysis</h3>
-              {/* Current emotion */}
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-zinc-500">Current</span>
-                <span className={`font-semibold capitalize ${emotionColor[latest.emotion] ?? "text-zinc-400"}`}>
-                  {latest.emotion}
+
+              {/* Primary emotion */}
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-zinc-500">Emotion</span>
+                <span className={`font-semibold capitalize ${emotionColor[displayEmotion] ?? "text-zinc-400"}`}>
+                  {displayEmotion}
+                  {latest.hf_confidence != null && (
+                    <span className="ml-1 text-[9px] text-zinc-500">
+                      {Math.round(latest.hf_confidence * 100)}%
+                    </span>
+                  )}
                 </span>
               </div>
-              {/* Mini trend (last 8 turns) */}
+
+              {/* Sentiment polarity */}
+              {latest.sentiment && (
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-zinc-500">Sentiment</span>
+                  <span className={`font-medium capitalize ${sentimentBadge[latest.sentiment] ?? "text-zinc-400"}`}>
+                    {latest.sentiment}
+                  </span>
+                </div>
+              )}
+
+              {/* Confidence score */}
+              {latest.confidence_score != null && (
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-zinc-500">Confidence</span>
+                  <span className={`font-medium ${
+                    latest.confidence_score >= 60 ? "text-green-400"
+                    : latest.confidence_score >= 40 ? "text-amber-400"
+                    : "text-red-400"}`}>
+                    {latest.confidence_score}/100
+                  </span>
+                </div>
+              )}
+
+              {/* Trend dots (last 8 turns) */}
               {sentimentHistory.length > 1 && (
                 <div className="flex items-center gap-1 mb-2">
                   {sentimentHistory.slice(-8).map((s, i) => (
-                    <div
-                      key={i}
-                      title={s.emotion}
-                      className={`h-2 w-2 rounded-full ${dotColor[s.emotion] ?? "bg-zinc-500"}`}
-                    />
+                    <div key={i} title={s.hf_emotion ?? s.emotion}
+                      className={`h-2 w-2 rounded-full ${dotColor[s.emotion] ?? "bg-zinc-500"}`} />
                   ))}
                 </div>
               )}
-              {/* Metrics */}
+
+              {/* Behavioral flags */}
+              {latest.flags && latest.flags.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {latest.flags.map((f) => (
+                    <span key={f}
+                      className={`rounded px-1 py-0.5 text-[9px] font-medium capitalize ${
+                        f === "confident" ? "bg-green-900/40 text-green-400"
+                        : f === "nervous" || f === "distressed" ? "bg-red-900/40 text-red-400"
+                        : "bg-zinc-800 text-zinc-400"}`}>
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Audio metrics */}
               <dl className="space-y-1 text-[10px] text-zinc-500">
                 {latest.speaking_rate_wpm > 0 && (
                   <div className="flex justify-between">
@@ -804,7 +924,7 @@ export default function InterviewPage() {
                 </div>
                 {latest.hedge_count > 0 && (
                   <div className="flex justify-between">
-                    <dt>Hedging phrases</dt>
+                    <dt>Hedging</dt>
                     <dd className="text-zinc-300">{latest.hedge_count}</dd>
                   </div>
                 )}
@@ -813,6 +933,34 @@ export default function InterviewPage() {
                   <dd className="text-zinc-300 capitalize">{latest.energy_level}</dd>
                 </div>
               </dl>
+
+              {/* Posture (only when frame was sent and analyzed) */}
+              {latest.posture && (
+                <div className="mt-2 pt-2 border-t border-[var(--border)] space-y-1 text-[10px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-500">Posture</span>
+                    <span className={`font-medium capitalize ${postureColor[latest.posture] ?? "text-zinc-400"}`}>
+                      {latest.posture.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                  {latest.gaze_direction && (
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Gaze</span>
+                      <span className={`text-zinc-300 capitalize ${latest.gaze_direction !== "center" ? "text-amber-400" : ""}`}>
+                        {latest.gaze_direction}
+                      </span>
+                    </div>
+                  )}
+                  {latest.spine_score != null && (
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Spine</span>
+                      <span className={latest.spine_score >= 70 ? "text-green-400" : "text-amber-400"}>
+                        {latest.spine_score}/100
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           );
         })()}
