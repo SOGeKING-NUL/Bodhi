@@ -67,6 +67,12 @@ export function useInterviewAudio() {
       speechFramesRef.current = 0
       onListening()
 
+      // Ensure AudioContext is active — it may have been suspended
+      // by the browser after HTML5 Audio playback in playStreamingAudio
+      if (audioCtxRef.current?.state === "suspended") {
+        audioCtxRef.current.resume()
+      }
+
       const analyser = analyserRef.current
       if (!analyser) return
       const buf = new Float32Array(analyser.fftSize)
@@ -238,7 +244,7 @@ export function useInterviewAudio() {
         if (!firstBatchPlayed) {
           resolved = true
           resolve()
-        } else if (audioQueue.length === 0 && currentAudio && currentAudio.ended) {
+        } else if (audioQueue.length === 0 && currentAudio && (currentAudio as HTMLAudioElement).ended) {
           if (!resolved) {
             resolved = true
             resolve()

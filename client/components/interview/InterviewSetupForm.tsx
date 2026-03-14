@@ -17,6 +17,7 @@ export interface InterviewFormData {
   mode: "standard" | "option_a" | "option_b"
   user_id: string
   jd_text: string
+  interviewer_persona: "bodhi" | "riya"
 }
 
 export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProps) {
@@ -31,6 +32,7 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
     mode: "standard",
     user_id: "",
     jd_text: "",
+    interviewer_persona: "bodhi",
   })
 
   const handleResumeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -61,25 +63,15 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-7">
+    <form onSubmit={handleSubmit} className="space-y-4">
       {error && (
-        <div className="rounded-xl border-2 border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 animate-fade-in-up shadow-[0px_4px_12px_rgba(239,68,68,0.08)]">
-          <div className="flex items-start gap-3">
-            <div className="w-5 h-5 rounded-full bg-red-100 flex items-center justify-center shrink-0 mt-0.5">
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M6 3v3m0 2v.5" stroke="#DC2626" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            </div>
-            <div className="flex-1">
-              <p className="font-semibold text-red-800 mb-1">Error</p>
-              <p className="text-sm">{error}</p>
-            </div>
-          </div>
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 animate-fade-in-up">
+          {error}
         </div>
       )}
 
-      <div className="space-y-3">
-        <label className="block text-sm font-semibold text-[#2F3037] font-sans">
+      <div>
+        <label className="block text-xs font-semibold text-[rgba(55,50,47,0.6)] mb-2 uppercase tracking-wider">
           Interview Mode
         </label>
         <select
@@ -92,173 +84,173 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
             setUploadedProfile(null)
             setError("")
           }}
-          className="w-full px-4 py-3.5 rounded-xl border-2 border-[rgba(55,50,47,0.12)] bg-white text-[#2F3037] focus:outline-none focus:ring-4 focus:ring-[#37322F]/10 focus:border-[#37322F] transition-all font-sans text-[15px] cursor-pointer hover:border-[rgba(55,50,47,0.2)] shadow-[0px_2px_8px_rgba(55,50,47,0.04)]"
+          className="w-full rounded-xl border border-[rgba(55,50,47,0.15)] bg-[#F7F5F3] px-3 py-2.5 text-sm text-[#37322F] focus:outline-none focus:ring-2 focus:ring-[rgba(55,50,47,0.15)] transition"
         >
           <option value="standard">Standard (Company-based)</option>
           <option value="option_a">Resume-Based</option>
           <option value="option_b">JD-Targeted</option>
         </select>
-        <p className="text-xs text-[rgba(55,50,47,0.5)] leading-relaxed">
-          Choose how you want to conduct your mock interview
-        </p>
       </div>
 
       {form.mode !== "standard" && !form.user_id && (
-        <div className="space-y-3 animate-fade-in-up">
-          <label className="block text-sm font-semibold text-[#2F3037] font-sans">
-            Upload Resume <span className="text-[rgba(55,50,47,0.45)] font-normal text-xs">(PDF or DOCX)</span>
+        <div className="space-y-2 animate-fade-in-up">
+          <label className="block text-xs font-semibold text-[rgba(55,50,47,0.6)] uppercase tracking-wider">
+            Upload Resume (PDF or DOCX)
           </label>
           <input
             type="file"
             accept=".pdf,.docx"
             onChange={handleResumeUpload}
             disabled={uploading}
-            className="w-full rounded-xl border-2 border-[rgba(55,50,47,0.12)] bg-white px-4 py-3.5 text-sm text-[#2F3037]
-              file:mr-4 file:py-2 file:px-5 file:rounded-full file:border-0
-              file:bg-gradient-to-r file:from-[#37322F] file:to-[#2A2624] file:text-white file:text-xs file:font-semibold
-              hover:file:from-[#2A2624] hover:file:to-[#1F1C1A] hover:file:shadow-lg
-              focus:outline-none focus:ring-4 focus:ring-[#37322F]/10 focus:border-[#37322F]
-              hover:border-[rgba(55,50,47,0.2)] shadow-[0px_2px_8px_rgba(55,50,47,0.04)]
-              disabled:opacity-50 transition-all cursor-pointer"
+            className="w-full rounded-xl border border-[rgba(55,50,47,0.15)] bg-[#F7F5F3] px-3 py-2.5 text-sm text-[#37322F] 
+              file:mr-4 file:py-1.5 file:px-4 file:rounded-full file:border-0 
+              file:bg-[#37322F] file:text-white file:text-xs file:font-semibold 
+              hover:file:bg-[#2a2520] disabled:opacity-50 transition"
           />
           {uploading && (
-            <p className="text-sm text-[rgba(55,50,47,0.6)] flex items-center gap-2.5 font-sans">
-              <span className="w-4 h-4 border-2 border-[rgba(55,50,47,0.3)] border-t-[#37322F] rounded-full animate-spin" />
+            <p className="text-xs text-[rgba(55,50,47,0.5)] flex items-center gap-2">
+              <span className="w-3 h-3 border-2 border-[rgba(55,50,47,0.3)] border-t-[#37322F] rounded-full animate-spin" />
               Uploading and parsing resume...
-            </p>
-          )}
-          {!uploading && (
-            <p className="text-xs text-[rgba(55,50,47,0.5)] leading-relaxed">
-              Upload your resume to enable resume-based or JD-targeted interviews
             </p>
           )}
         </div>
       )}
 
       {form.mode !== "standard" && uploadedProfile && (
-        <div className="rounded-xl border-2 border-green-200 bg-gradient-to-br from-green-50 to-emerald-50 p-6 space-y-4 animate-fade-in-up shadow-[0px_4px_16px_rgba(34,197,94,0.08)]">
+        <div className="rounded-xl border border-green-700 bg-green-900/20 p-4 space-y-2 animate-fade-in-up">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center shrink-0 shadow-lg">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M3 8L7 12L13 5" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-sm font-bold text-green-800 font-sans">Resume Uploaded Successfully</p>
-                <p className="text-xs text-green-600 mt-0.5">Ready to start your interview</p>
-              </div>
-            </div>
+            <p className="text-xs font-medium text-green-300 flex items-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Resume Uploaded
+            </p>
             <button
               type="button"
               onClick={() => {
                 setUploadedProfile(null)
                 setForm((p) => ({ ...p, user_id: "" }))
               }}
-              className="px-3 py-1.5 text-xs text-green-700 hover:text-green-900 hover:bg-green-100 rounded-lg transition-all font-semibold"
+              className="text-xs text-[rgba(55,50,47,0.5)] hover:text-[#37322F] transition"
             >
               Change
             </button>
           </div>
-          
-          <div className="pt-3 border-t border-green-200">
-            <div className="space-y-2.5">
-              <div>
-                <p className="text-xs font-semibold text-green-700 uppercase tracking-wider mb-1">Candidate</p>
-                <p className="font-semibold text-[#2F3037] text-base">{uploadedProfile.name}</p>
-                {uploadedProfile.email && (
-                  <p className="text-[rgba(55,50,47,0.6)] text-sm mt-0.5">{uploadedProfile.email}</p>
+          <div className="text-xs text-[rgba(55,50,47,0.7)]">
+            <p className="font-medium text-[#37322F]">{uploadedProfile.name}</p>
+            {uploadedProfile.email && (
+              <p className="text-[rgba(55,50,47,0.5)]">{uploadedProfile.email}</p>
+            )}
+            {uploadedProfile.skills.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {uploadedProfile.skills.slice(0, 5).map((s, i) => (
+                  <span
+                    key={i}
+                    className="rounded-full bg-[rgba(55,50,47,0.1)] px-2 py-0.5 text-[10px] font-medium"
+                  >
+                    {s}
+                  </span>
+                ))}
+                {uploadedProfile.skills.length > 5 && (
+                  <span className="text-[10px] text-[rgba(55,50,47,0.4)]">
+                    +{uploadedProfile.skills.length - 5} more
+                  </span>
                 )}
               </div>
-              
-              {uploadedProfile.skills.length > 0 && (
-                <div>
-                  <p className="text-xs font-semibold text-green-700 uppercase tracking-wider mb-2">Skills</p>
-                  <div className="flex flex-wrap gap-2">
-                    {uploadedProfile.skills.slice(0, 6).map((s, i) => (
-                      <span
-                        key={i}
-                        className="rounded-lg bg-white border border-green-200 px-3 py-1.5 text-xs font-medium text-[#2F3037] shadow-sm"
-                      >
-                        {s}
-                      </span>
-                    ))}
-                    {uploadedProfile.skills.length > 6 && (
-                      <span className="rounded-lg bg-green-100 px-3 py-1.5 text-xs font-semibold text-green-700">
-                        +{uploadedProfile.skills.length - 6} more
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+            )}
           </div>
         </div>
       )}
 
-      <div className="space-y-3">
-        <label className="block text-sm font-semibold text-[#2F3037] font-sans">
-          Your Name <span className="text-red-500">*</span>
-        </label>
-        <FormInput
-          placeholder="Enter your full name"
-          required
-          value={form.candidate_name}
-          onChange={(e) => setForm({ ...form, candidate_name: e.target.value })}
-        />
-      </div>
+      <FormInput
+        placeholder="Your name *"
+        required
+        value={form.candidate_name}
+        onChange={(e) => setForm({ ...form, candidate_name: e.target.value })}
+      />
 
       {form.mode === "standard" && (
         <>
-          <div className="space-y-3">
-            <label className="block text-sm font-semibold text-[#2F3037] font-sans">
-              Company <span className="text-red-500">*</span>
-            </label>
-            <FormInput
-              placeholder="e.g. Google, Microsoft, Amazon"
-              required
-              value={form.company}
-              onChange={(e) => setForm({ ...form, company: e.target.value })}
-            />
-          </div>
-          
-          <div className="space-y-3">
-            <label className="block text-sm font-semibold text-[#2F3037] font-sans">
-              Role <span className="text-red-500">*</span>
-            </label>
-            <FormInput
-              placeholder="e.g. Software Engineer, Product Manager"
-              required
-              value={form.role}
-              onChange={(e) => setForm({ ...form, role: e.target.value })}
-            />
-          </div>
+          <FormInput
+            placeholder="Company *"
+            required
+            value={form.company}
+            onChange={(e) => setForm({ ...form, company: e.target.value })}
+          />
+          <FormInput
+            placeholder="Role *"
+            required
+            value={form.role}
+            onChange={(e) => setForm({ ...form, role: e.target.value })}
+          />
         </>
       )}
 
       {form.mode === "option_b" && (
-        <div className="space-y-3">
-          <label className="block text-sm font-semibold text-[#2F3037] font-sans">
-            Job Description <span className="text-red-500">*</span>
+        <div className="animate-fade-in-up">
+          <label className="block text-xs font-semibold text-[rgba(55,50,47,0.6)] mb-2 uppercase tracking-wider">
+            Job Description *
           </label>
           <textarea
             placeholder="Paste the full job description here..."
             value={form.jd_text}
             onChange={(e) => setForm({ ...form, jd_text: e.target.value })}
-            className="w-full min-h-44 px-4 py-3.5 rounded-xl border-2 border-[rgba(55,50,47,0.12)] bg-white text-[#2F3037] placeholder:text-[rgba(55,50,47,0.35)] focus:outline-none focus:ring-4 focus:ring-[#37322F]/10 focus:border-[#37322F] hover:border-[rgba(55,50,47,0.2)] shadow-[0px_2px_8px_rgba(55,50,47,0.04)] transition-all font-sans text-[15px] resize-y leading-relaxed"
+            className="w-full min-h-32 rounded-xl border border-[rgba(55,50,47,0.15)] bg-[#F7F5F3] px-3 py-2.5 text-sm text-[#37322F] placeholder-[rgba(55,50,47,0.4)] focus:outline-none focus:ring-2 focus:ring-[rgba(55,50,47,0.15)] transition resize-y"
             required
           />
-          <p className="text-xs text-[rgba(55,50,47,0.5)] leading-relaxed">
-            Include role requirements, responsibilities, and qualifications
-          </p>
         </div>
       )}
 
-      <div className="pt-4">
-        <PrimaryButton type="submit" fullWidth loading={loading}>
-          {loading ? "Starting Interview..." : "Continue →"}
-        </PrimaryButton>
+      <div>
+        <label className="block text-xs font-semibold text-[rgba(55,50,47,0.6)] mb-3 uppercase tracking-wider">
+          Choose Interviewer
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => setForm({ ...form, interviewer_persona: "bodhi" })}
+            className={`flex flex-col items-center p-4 rounded-xl border transition-all ${
+              form.interviewer_persona === "bodhi"
+                ? "bg-[#37322F] border-[#37322F] text-white"
+                : "bg-[#F7F5F3] border-[rgba(55,50,47,0.15)] text-[#37322F] hover:border-[#37322F]"
+            }`}
+          >
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center mb-2 ${
+              form.interviewer_persona === "bodhi" ? "bg-[rgba(255,255,255,0.2)]" : "bg-[rgba(55,50,47,0.1)]"
+            }`}>
+              <span className="text-xl">🧔</span>
+            </div>
+            <span className="text-sm font-bold">Bodhi</span>
+            <span className={`text-[10px] mt-0.5 ${
+              form.interviewer_persona === "bodhi" ? "text-[rgba(255,255,255,0.7)]" : "text-[rgba(55,50,47,0.5)]"
+            }`}>Tough but Fair</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setForm({ ...form, interviewer_persona: "riya" })}
+            className={`flex flex-col items-center p-4 rounded-xl border transition-all ${
+              form.interviewer_persona === "riya"
+                ? "bg-[#37322F] border-[#37322F] text-white"
+                : "bg-[#F7F5F3] border-[rgba(55,50,47,0.15)] text-[#37322F] hover:border-[#37322F]"
+            }`}
+          >
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center mb-2 ${
+              form.interviewer_persona === "riya" ? "bg-[rgba(255,255,255,0.2)]" : "bg-[rgba(55,50,47,0.1)]"
+            }`}>
+              <span className="text-xl">👩‍💼</span>
+            </div>
+            <span className="text-sm font-bold">Riya</span>
+            <span className={`text-[10px] mt-0.5 ${
+              form.interviewer_persona === "riya" ? "text-[rgba(255,255,255,0.7)]" : "text-[rgba(55,50,47,0.5)]"
+            }`}>Supportive</span>
+          </button>
+        </div>
       </div>
+
+      <PrimaryButton type="submit" fullWidth loading={loading}>
+        Continue →
+      </PrimaryButton>
     </form>
   )
 }

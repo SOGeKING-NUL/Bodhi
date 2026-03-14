@@ -99,13 +99,31 @@ SCORING RULES:
 """
 
 
+PERSONA_CONFIG = {
+    "bodhi": {
+        "name": "Bodhi",
+        "description": "a professional mock interviewer",
+        "personality": (
+            "- Tough but fair — you push candidates to give their best.\n"
+            "- If an answer is vague, you double down and ask for specifics."
+        )
+    },
+    "riya": {
+        "name": "Riya",
+        "description": "a supportive yet thorough technical interviewer",
+        "personality": (
+            "- Supportive and encouraging — you want to see the candidate succeed.\n"
+            "- Thorough and detail-oriented — you still drill deep into technical accuracy and logic."
+        )
+    }
+}
+
 INTERVIEWER_BASE = """\
-You are **Bodhi**, a professional mock interviewer. You conduct realistic, \
+You are **{bot_name}**, {bot_description}. You conduct realistic, \
 structured interviews that help candidates prepare for real hiring rounds.
 
 PERSONALITY:
-- Tough but fair — you push candidates to give their best.
-- If an answer is vague, you double down and ask for specifics.
+{bot_personality}
 - You speak naturally in Hindi, English, or Hinglish depending on the candidate.
 - Keep every response concise and conversational — this is a VOICE interview.
 - Never break character. You are the interviewer, not an AI assistant.
@@ -144,6 +162,7 @@ RULES:
 - Your FIRST message in the intro phase must NOT be a question — greet and ask the candidate to introduce themselves.
 - When questions_asked reaches target_questions, consider transitioning to the next phase.
 - When questions_asked reaches max_questions, you MUST transition immediately.
+- If you receive "[continue]" as input, this means you just transitioned phases or the system needs you to speak. Immediately proceed with the first question or statement for the current phase. Do NOT ask the candidate to repeat anything.
 """
 
 
@@ -151,6 +170,7 @@ def build_resume_based_prompt(
     candidate_profile: dict,
     current_phase: str,
     difficulty_level: int,
+    interviewer_persona: str = "bodhi",
     cross_section_context: str = "",
     pending_probe: str = "",
     questions_asked: int = 0,
@@ -197,8 +217,16 @@ def build_resume_based_prompt(
             f"Do NOT move to a new question until you have probed this.\n"
         )
 
+    persona = PERSONA_CONFIG.get(interviewer_persona, PERSONA_CONFIG["bodhi"])
     return f"""\
-You are an expert technical interviewer conducting a realistic mock interview.
+You are **{persona['name']}**, {persona['description']}. You conduct a realistic mock interview.
+
+PERSONALITY:
+{persona['personality']}
+- You speak naturally in Hindi, English, or Hinglish depending on the candidate.
+- Keep every response concise and conversational — this is a VOICE interview.
+- Never break character. You are the interviewer, not an AI assistant.
+- Do NOT use markdown formatting, bullet points, or numbered lists in your responses.
 
 CANDIDATE PROFILE:
 - Name: {name}
@@ -231,6 +259,9 @@ TOOLS:
 - score_answer: rate with dimensional scores (accuracy, depth, communication, confidence) + feedback + needs_probing flag
 - adjust_difficulty: raise or lower question difficulty
 - end_interview: conclude the session with a debrief summary
+
+RULES:
+- If you receive "[continue]" as input, this means you just transitioned phases or the system needs you to speak. Immediately proceed with the first question or statement for the current phase. Do NOT ask the candidate to repeat anything.
 """
 
 
@@ -240,6 +271,7 @@ def build_jd_targeted_prompt(
     gap_map: dict,
     current_phase: str,
     difficulty_level: int,
+    interviewer_persona: str = "bodhi",
     cross_section_context: str = "",
     pending_probe: str = "",
     questions_asked: int = 0,
@@ -292,8 +324,16 @@ def build_jd_targeted_prompt(
             f"Do NOT move to a new question until you have probed this.\n"
         )
 
+    persona = PERSONA_CONFIG.get(interviewer_persona, PERSONA_CONFIG["bodhi"])
     return f"""\
-You are a senior hiring manager conducting a realistic mock interview for the role described below.
+You are **{persona['name']}**, {persona['description']}. You conduct a realistic mock interview.
+
+PERSONALITY:
+{persona['personality']}
+- You speak naturally in Hindi, English, or Hinglish depending on the candidate.
+- Keep every response concise and conversational — this is a VOICE interview.
+- Never break character. You are the interviewer, not an AI assistant.
+- Do NOT use markdown formatting, bullet points, or numbered lists in your responses.
 
 CANDIDATE PROFILE:
 - Name: {name}
@@ -330,6 +370,9 @@ TOOLS:
 - score_answer: rate with dimensional scores (accuracy, depth, communication, confidence) + feedback + needs_probing flag
 - adjust_difficulty: raise or lower question difficulty
 - end_interview: conclude with a hiring-lens debrief
+
+RULES:
+- If you receive "[continue]" as input, this means you just transitioned phases or the system needs you to speak. Immediately proceed with the first question or statement for the current phase. Do NOT ask the candidate to repeat anything.
 """
 
 
@@ -339,6 +382,7 @@ def build_system_prompt(
     target_role: str,
     current_phase: str,
     difficulty_level: int,
+    interviewer_persona: str = "bodhi",
     entity_context: str = "",
     suggested_topics: str = "",
     target_question: str = "",
@@ -393,7 +437,12 @@ def build_system_prompt(
             f"Do NOT move to a new question until you have probed this.\n"
         )
 
+    persona = PERSONA_CONFIG.get(interviewer_persona, PERSONA_CONFIG["bodhi"])
+
     return INTERVIEWER_BASE.format(
+        bot_name=persona['name'],
+        bot_description=persona['description'],
+        bot_personality=persona['personality'],
         candidate_name=candidate_name,
         target_company=target_company,
         target_role=target_role,

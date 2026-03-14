@@ -32,11 +32,12 @@ export default function ResumeUploadModal() {
         const token = await getToken();
         const status = await getCurrentUserStatus(token ?? undefined);
         if (!alive) return;
-        setOpen(!status.has_resume);
-      } catch (err) {
-        if (!alive) return;
-        setOpen(true);
-        setError(String(err));
+        // Only show modal when we get a confirmed has_resume: false
+        // Never block the user due to API errors or timeouts
+        setOpen(status.has_resume === false);
+      } catch {
+        // On error (network, auth not ready, etc.) silently skip — do not block the user
+        if (alive) setOpen(false);
       } finally {
         if (alive) setChecking(false);
       }
