@@ -148,11 +148,11 @@ export default function InterviewPage() {
         proctoring.endSession()
         phaseRef.current = "ended"
         try {
-          const end = await endInterview(sessionIdRef.current)
-          setSummary(end)
+          await endInterview(sessionIdRef.current)
         } catch { }
         audio.cleanup()
         proctoring.cleanupCamera()
+        router.push(`/report/${sessionIdRef.current}`)
         return
       }
 
@@ -227,25 +227,13 @@ export default function InterviewPage() {
     setPhase("processing")
     proctoring.endSession()
     try {
-      const r = await endInterview(sessionIdRef.current)
-      setSummary(r)
-      setPhase("ended")
-
-      // Load the report
-      setLoadingReport(true);
-      try {
-        const reportData = await getInterviewReport(sessionIdRef.current);
-        setReport(reportData);
-      } catch (err) {
-        console.error("Failed to load report:", err);
-      } finally {
-        setLoadingReport(false);
-      }
+      await endInterview(sessionIdRef.current)
     } catch (err) {
       setError(String(err))
     }
     audio.cleanup()
     proctoring.cleanupCamera()
+    router.push(`/report/${sessionIdRef.current}`)
   }
 
   // Cleanup

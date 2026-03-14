@@ -1081,6 +1081,23 @@ async def send_audio_stream(
     current_phase = result.get("current_phase", "streaming")
     should_end = result.get("should_end", False)
 
+    # ── Phase transition retry: if reply is empty (tool-only turn), re-invoke ─
+    # This happens when the LLM emits a TRANSITION/SCORE tool call but no spoken
+    # text.  We send "[continue]" so it generates the next question/statement.
+    if not reply_text and not should_end:
+        _stream_log.info("[AUDIO-STREAM] Empty reply after graph.invoke — re-invoking with [continue]")
+        result = await loop.run_in_executor(
+            None,
+            lambda: graph.invoke(
+                {"messages": [HumanMessage(content="[continue]")]},
+                config=graph_config,
+            ),
+        )
+        if result.get("messages") and hasattr(result["messages"][-1], "content"):
+            reply_text = _extract_text(result["messages"][-1].content).strip()
+        current_phase = result.get("current_phase", current_phase)
+        should_end = result.get("should_end", should_end)
+
     if cache:
         try:
             cache.save_session_state(session_id, {

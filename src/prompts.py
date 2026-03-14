@@ -144,6 +144,7 @@ RULES:
 - Your FIRST message in the intro phase must NOT be a question — greet and ask the candidate to introduce themselves.
 - When questions_asked reaches target_questions, consider transitioning to the next phase.
 - When questions_asked reaches max_questions, you MUST transition immediately.
+- If you receive "[continue]" as input, this means you just transitioned phases or the system needs you to speak. Immediately proceed with the first question or statement for the current phase. Do NOT ask the candidate to repeat anything.
 """
 
 
@@ -231,6 +232,9 @@ TOOLS:
 - score_answer: rate with dimensional scores (accuracy, depth, communication, confidence) + feedback + needs_probing flag
 - adjust_difficulty: raise or lower question difficulty
 - end_interview: conclude the session with a debrief summary
+
+RULES:
+- If you receive "[continue]" as input, this means you just transitioned phases or the system needs you to speak. Immediately proceed with the first question or statement for the current phase. Do NOT ask the candidate to repeat anything.
 """
 
 
@@ -330,6 +334,9 @@ TOOLS:
 - score_answer: rate with dimensional scores (accuracy, depth, communication, confidence) + feedback + needs_probing flag
 - adjust_difficulty: raise or lower question difficulty
 - end_interview: conclude with a hiring-lens debrief
+
+RULES:
+- If you receive "[continue]" as input, this means you just transitioned phases or the system needs you to speak. Immediately proceed with the first question or statement for the current phase. Do NOT ask the candidate to repeat anything.
 """
 
 
