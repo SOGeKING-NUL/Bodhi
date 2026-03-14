@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -72,7 +73,8 @@ class IngestResponse(BaseModel):
 
 class UploadResponse(BaseModel):
     chunks_ingested: int
-    topics_extracted: list[str]
+    topics_extracted: list[str] = []
+    profile_extracted: dict | None = None
 
 
 class SearchRequest(BaseModel):
@@ -105,6 +107,9 @@ class InterviewStartRequest(BaseModel):
     candidate_name: str = "Candidate"
     company: str = "General"
     role: str = "Software Engineer"
+    jd_text: str = ""  # Optional job description text for curriculum customization
+    mode: Literal["standard", "option_a", "option_b"] = "standard"
+    user_id: str | None = None   # required for option_a and option_b
 
 
 class InterviewStartResponse(BaseModel):

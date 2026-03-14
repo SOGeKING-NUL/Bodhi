@@ -5,11 +5,13 @@ import {
   type SessionState,
   type SessionEnd,
   type StreamMeta,
+  type CandidateProfile,
   startInterviewStream,
   sendAudioStream,
   parseStreamHeaders,
   getSession,
   endInterview,
+  uploadResume,
 } from "@/lib/api";
 import { encodeWav } from "@/lib/wav";
 
@@ -27,10 +29,18 @@ interface Turn {
   phase?: string;
 }
 
+interface Violation {
+  violation_type: string;
+  severity: string;
+  message: string;
+  timestamp: string;
+}
+
 const SILENCE_THRESHOLD = 0.015;
 const SILENCE_DURATION_MS = 1500;
 const SPEECH_CONFIRM_FRAMES = 5;
 const MIN_RECORD_MS = 500;
+const FRAME_INTERVAL_MS = 2500;
 
 export default function InterviewPage() {
   const [sessionId, setSessionId] = useState("");
@@ -41,12 +51,36 @@ export default function InterviewPage() {
   const [level, setLevel] = useState(0);
   const [error, setError] = useState("");
 
-  const [startForm, setStartForm] = useState({
+  // Proctoring state
+  const [proctoringActive, setProctoringActive] = useState(false);
+  const [sessionFlagged, setSessionFlagged] = useState(false);
+  const [violations, setViolations] = useState<Violation[]>([]);
+  const [cameraError, setCameraError] = useState("");
+
+  const [startForm, setStartForm] = useState<{
+    candidate_name: string;
+    company: string;
+    role: string;
+    mode: "standard" | "option_a" | "option_b";
+    user_id: string;
+    jd_text: string;
+  }>({
     candidate_name: "",
     company: "",
     role: "Software Engineer",
+    mode: "standard" as "standard" | "option_a" | "option_b",
+    user_id: "",
+    jd_text: "",
+    mode: "standard",
+    user_id: "",
+    jd_text: "",
   });
 
+  // Resume upload state
+  const [uploading, setUploading] = useState(false);
+  const [uploadedProfile, setUploadedProfile] = useState<CandidateProfile | null>(null);
+
+  // Audio refs
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -60,6 +94,14 @@ export default function InterviewPage() {
   const phaseRef = useRef<Phase>("idle");
   const sessionIdRef = useRef("");
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+
+  // Proctoring refs
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const proctoringWsRef = useRef<WebSocket | null>(null);
+  const frameIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const frameCounterRef = useRef(0);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -254,6 +296,131 @@ export default function InterviewPage() {
     workletRef.current = null;
   }, []);
 
+  // ── Camera setup ───────────────────────────────────────
+
+  const initCamera = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: "user" },
+      });
+      cameraStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+    } catch (err) {
+      setCameraError("Camera not available — proctoring disabled.");
+      console.warn("Camera init failed:", err);
+    }
+  }, []);
+
+  const cleanupCamera = useCallback(() => {
+    if (frameIntervalRef.current) {
+      clearInterval(frameIntervalRef.current);
+      frameIntervalRef.current = null;
+    }
+    cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
+    cameraStreamRef.current = null;
+  }, []);
+
+  // ── Capture frame from video as base64 JPEG ────────────
+
+  const captureFrame = useCallback((): string | null => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2) return null;
+
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    // Remove the data:image/jpeg;base64, prefix
+    return canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+  }, []);
+
+  // ── Proctoring WebSocket ────────────────────────────────
+
+  const connectProctoringWs = useCallback(
+    (sid: string, referenceImageB64: string) => {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+      const wsBase = apiBase.replace(/^http/, "ws");
+      const ws = new WebSocket(`${wsBase}/api/proctoring/ws/${sid}`);
+      proctoringWsRef.current = ws;
+
+      ws.onopen = () => {
+        // Enroll with reference photo
+        ws.send(
+          JSON.stringify({
+            type: "enroll",
+            candidate_id: sid,
+            image: referenceImageB64,
+          })
+        );
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+
+          if (msg.type === "enrolled") {
+            if (msg.success) {
+              setProctoringActive(true);
+              // Start sending frames
+              frameIntervalRef.current = setInterval(() => {
+                if (proctoringWsRef.current?.readyState !== WebSocket.OPEN) return;
+                const frame = captureFrame();
+                if (!frame) return;
+                frameCounterRef.current += 1;
+                proctoringWsRef.current.send(
+                  JSON.stringify({
+                    type: "frame",
+                    frame_id: `frame-${frameCounterRef.current}`,
+                    frame,
+                  })
+                );
+              }, FRAME_INTERVAL_MS);
+            }
+          } else if (msg.type === "frame_result") {
+            if (msg.has_violations && msg.violations?.length > 0) {
+              setViolations((prev) => [...prev, ...msg.violations].slice(-20));
+            }
+            if (msg.session_flagged) {
+              setSessionFlagged(true);
+            }
+          } else if (msg.type === "session_flagged") {
+            setSessionFlagged(true);
+          }
+        } catch {
+          // ignore parse errors
+        }
+      };
+
+      ws.onerror = () => {
+        setCameraError("Proctoring connection error.");
+      };
+
+      ws.onclose = () => {
+        setProctoringActive(false);
+      };
+    },
+    [captureFrame]
+  );
+
+  const endProctoringSession = useCallback(() => {
+    if (frameIntervalRef.current) {
+      clearInterval(frameIntervalRef.current);
+      frameIntervalRef.current = null;
+    }
+    const ws = proctoringWsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "end_session" }));
+      ws.close();
+    }
+    proctoringWsRef.current = null;
+  }, []);
+
   // ── VAD loop ───────────────────────────────────────────
 
   const startListening = useCallback(() => {
@@ -371,12 +538,14 @@ export default function InterviewPage() {
 
       if (meta.shouldEnd) {
         setPhase("ended");
+        endProctoringSession();
         phaseRef.current = "ended";
         try {
           const end = await endInterview(sessionIdRef.current);
           setSummary(end);
         } catch {}
         cleanupMic();
+        cleanupCamera();
         return;
       }
 
@@ -386,7 +555,7 @@ export default function InterviewPage() {
       setError(String(err));
       startListening();
     }
-  }, [playStreamingAudio, cleanupMic, startListening]);
+  }, [playStreamingAudio, cleanupMic, cleanupCamera, startListening, endProctoringSession]);
 
   const refreshSession = async () => {
     try {
@@ -403,7 +572,13 @@ export default function InterviewPage() {
     setPhase("processing");
     phaseRef.current = "processing";
     try {
-      await initMic();
+      // Init mic and camera in parallel
+      await Promise.all([initMic(), initCamera()]);
+
+      // Brief wait for video to be ready, then capture reference photo
+      await new Promise((res) => setTimeout(res, 800));
+      const referencePhoto = captureFrame();
+
       const res = await startInterviewStream(startForm);
 
       if (!res.ok) {
@@ -422,6 +597,11 @@ export default function InterviewPage() {
         ]);
       }
 
+      // Connect proctoring WebSocket (if camera is available)
+      if (referencePhoto && meta.session) {
+        connectProctoringWs(meta.session, referencePhoto);
+      }
+
       setPhase("speaking");
       await playStreamingAudio(res);
 
@@ -437,6 +617,7 @@ export default function InterviewPage() {
     cancelAnimationFrame(rafRef.current);
     isRecordingRef.current = false;
     setPhase("processing");
+    endProctoringSession();
     try {
       const r = await endInterview(sessionIdRef.current);
       setSummary(r);
@@ -445,7 +626,48 @@ export default function InterviewPage() {
       setError(String(err));
     }
     cleanupMic();
+    cleanupCamera();
   };
+
+  // ── Handle resume upload ──────────────────────────────
+
+  const handleResumeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    setError("");
+
+    try {
+      const result = await uploadResume(file);
+      setUploadedProfile(result.profile);
+      setStartForm((prev) => ({
+        ...prev,
+        user_id: result.user_id,
+        candidate_name: result.profile.name || prev.candidate_name,
+      }));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // ── Load URL params ────────────────────────────────────
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get("mode") as "option_a" | "option_b" | null;
+    const userId = params.get("user_id");
+    
+    if (mode && userId) {
+      setStartForm((prev) => ({
+        ...prev,
+        mode: mode,
+        user_id: userId,
+      }));
+    }
+  }, []);
 
   // ── Cleanup on unmount ─────────────────────────────────
 
@@ -453,8 +675,10 @@ export default function InterviewPage() {
     return () => {
       cancelAnimationFrame(rafRef.current);
       cleanupMic();
+      cleanupCamera();
+      endProctoringSession();
     };
-  }, [cleanupMic]);
+  }, [cleanupMic, cleanupCamera, endProctoringSession]);
 
   // ── Render ─────────────────────────────────────────────
 
@@ -477,6 +701,85 @@ export default function InterviewPage() {
           onSubmit={handleStart}
           className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--card)] p-5"
         >
+          <div>
+            <label className="block text-xs text-zinc-400 mb-1">Interview Mode</label>
+            <select
+              value={startForm.mode}
+              onChange={(e) => {
+                setStartForm({ ...startForm, mode: e.target.value as any });
+                setUploadedProfile(null);
+                setError("");
+              }}
+              className={inputCls}
+            >
+              <option value="standard">Standard (Company-based)</option>
+              <option value="option_a">Resume-Based</option>
+              <option value="option_b">JD-Targeted</option>
+            </select>
+          </div>
+
+          {startForm.mode !== "standard" && !startForm.user_id && (
+            <div className="space-y-2">
+              <label className="block text-xs text-zinc-400">
+                Upload Your Resume (PDF or DOCX)
+              </label>
+              <input
+                type="file"
+                accept=".pdf,.docx"
+                onChange={handleResumeUpload}
+                disabled={uploading}
+                className="w-full rounded border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm file:mr-4 file:rounded file:border-0 file:bg-white file:px-3 file:py-1 file:text-xs file:font-medium file:text-black hover:file:bg-zinc-200 disabled:opacity-50"
+              />
+              {uploading && (
+                <p className="text-xs text-zinc-400">Uploading and parsing resume...</p>
+              )}
+            </div>
+          )}
+
+          {startForm.mode !== "standard" && uploadedProfile && (
+            <div className="rounded border border-green-700 bg-green-900/20 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-green-300">✓ Resume Uploaded</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUploadedProfile(null);
+                    setStartForm((prev) => ({ ...prev, user_id: "" }));
+                  }}
+                  className="text-xs text-zinc-400 hover:text-white"
+                >
+                  Change
+                </button>
+              </div>
+              <div className="text-xs text-zinc-300">
+                <p className="font-medium">{uploadedProfile.name}</p>
+                {uploadedProfile.email && <p className="text-zinc-400">{uploadedProfile.email}</p>}
+                {uploadedProfile.skills.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {uploadedProfile.skills.slice(0, 5).map((skill, i) => (
+                      <span key={i} className="rounded bg-white/10 px-1.5 py-0.5 text-[10px]">
+                        {skill}
+                      </span>
+                    ))}
+                    {uploadedProfile.skills.length > 5 && (
+                      <span className="text-[10px] text-zinc-500">
+                        +{uploadedProfile.skills.length - 5} more
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {startForm.mode !== "standard" && startForm.user_id && !uploadedProfile && (
+            <div className="rounded border border-[var(--border)] bg-[var(--card)] p-3">
+              <p className="text-xs text-zinc-400">
+                Using existing profile: <span className="font-mono text-zinc-300">{startForm.user_id}</span>
+              </p>
+            </div>
+          )}
+
           <input
             placeholder="Your name"
             value={startForm.candidate_name}
@@ -485,21 +788,82 @@ export default function InterviewPage() {
             }
             className={inputCls}
           />
-          <input
-            placeholder="Company"
-            value={startForm.company}
-            onChange={(e) =>
-              setStartForm({ ...startForm, company: e.target.value })
+
+          {startForm.mode === "standard" && (
+            <>
+              <input
+                placeholder="Company"
+                value={startForm.company}
+                onChange={(e) =>
+                  setStartForm({ ...startForm, company: e.target.value })
+                }
+                className={inputCls}
+              />
+              <input
+                placeholder="Role"
+                value={startForm.role}
+                onChange={(e) =>
+                  setStartForm({ ...startForm, role: e.target.value })
+                }
+                className={inputCls}
+              />
+            </>
+          )}
+
+          {startForm.mode === "option_b" && (
+            <textarea
+              placeholder="Job Description (paste full JD text here)"
+              value={startForm.jd_text}
+              onChange={(e) =>
+                setStartForm({ ...startForm, jd_text: e.target.value })
+              }
+              className={`${inputCls} min-h-32`}
+              required
+            />
+          )}
+
+          <div className="flex flex-col gap-3">
+            <select
+              value={startForm.mode}
+              onChange={(e) =>
+                setStartForm({
+                  ...startForm,
+                  mode: e.target.value as "standard" | "option_a" | "option_b",
+                })
+              }
+              className={inputCls}
+            >
+              <option value="standard">Standard (Company + Role + JD)</option>
+              <option value="option_a">Resume Based (Personalized)</option>
+              <option value="option_b">JD Gap Analysis (Resume + JD)</option>
+            </select>
+
+            {startForm.mode !== "standard" && (
+              <input
+                placeholder="User ID (from Resumes tab)"
+                value={startForm.user_id}
+                onChange={(e) =>
+                  setStartForm({ ...startForm, user_id: e.target.value })
+                }
+                className={inputCls}
+                required={startForm.mode !== "standard"}
+              />
+            )}
+          </div>
+
+          <textarea
+            placeholder={
+              startForm.mode === "option_b"
+                ? "Paste Job Description here (Required for Gap Analysis)"
+                : "Paste Job Description / JD (optional — helps customize interview questions)"
             }
-            className={inputCls}
-          />
-          <input
-            placeholder="Role"
-            value={startForm.role}
+            value={startForm.jd_text}
             onChange={(e) =>
-              setStartForm({ ...startForm, role: e.target.value })
+              setStartForm({ ...startForm, jd_text: e.target.value })
             }
-            className={inputCls}
+            rows={4}
+            className={inputCls + " resize-y"}
+            required={startForm.mode === "option_b"}
           />
           <button
             type="submit"
@@ -514,6 +878,9 @@ export default function InterviewPage() {
 
   return (
     <div className="flex h-[calc(100vh-80px)] gap-4">
+      {/* Hidden canvas for frame capture */}
+      <canvas ref={canvasRef} className="hidden" />
+
       {/* Main area */}
       <div className="flex flex-1 flex-col">
         {/* Header */}
@@ -630,6 +997,59 @@ export default function InterviewPage() {
 
       {/* Sidebar */}
       <div className="hidden w-52 shrink-0 space-y-3 lg:block">
+        {/* Camera preview */}
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] overflow-hidden">
+          <video
+            ref={videoRef}
+            muted
+            playsInline
+            className="w-full rounded-lg"
+            style={{ transform: "scaleX(-1)" }}
+          />
+          {cameraError && (
+            <p className="px-3 py-2 text-xs text-zinc-500">{cameraError}</p>
+          )}
+        </div>
+
+        {/* Proctoring status */}
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 text-sm">
+          <div className="mb-2 flex items-center gap-2">
+            <div
+              className={`h-2 w-2 rounded-full ${
+                sessionFlagged
+                  ? "bg-red-500"
+                  : proctoringActive
+                    ? "animate-pulse bg-green-400"
+                    : "bg-zinc-600"
+              }`}
+            />
+            <h3 className="font-semibold text-zinc-300">
+              {sessionFlagged ? "Flagged" : proctoringActive ? "Proctoring" : "Inactive"}
+            </h3>
+          </div>
+          {sessionFlagged && (
+            <p className="mb-2 text-xs text-red-400">
+              Session flagged due to violations.
+            </p>
+          )}
+          {violations.length > 0 && (
+            <div className="space-y-1 max-h-36 overflow-y-auto">
+              {violations.slice(-5).map((v, i) => (
+                <div key={i} className="rounded bg-red-900/20 px-2 py-1">
+                  <p className="text-[10px] font-medium text-red-300 capitalize">
+                    {v.violation_type.replace(/_/g, " ")}
+                  </p>
+                  <p className="text-[10px] text-zinc-500">{v.message}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          {violations.length === 0 && proctoringActive && (
+            <p className="text-xs text-zinc-500">No violations detected.</p>
+          )}
+        </div>
+
+        {/* Session info */}
         <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 text-sm">
           <h3 className="mb-2 font-semibold text-zinc-300">Session</h3>
           {sessionInfo ? (

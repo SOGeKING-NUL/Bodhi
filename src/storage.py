@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS company_documents (
     chunk_text      TEXT NOT NULL,
     chunk_index     INT NOT NULL,
     source_label    TEXT DEFAULT '',
-    embedding       vector(768) NOT NULL,
+    embedding       vector(3072) NOT NULL,
     contributed_by  TEXT DEFAULT '',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -142,6 +142,39 @@ class BodhiStorage:
                 cur.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS clerk_user_id TEXT;")
             except Exception:
                 pass
+
+            # Execute the user_profiles table separately so any failure is visible.
+            # (psycopg2 multi-statement execute only surfaces the last statement's error.)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    user_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    resume_raw_text TEXT NOT NULL,
+                    professional_summary JSONB NOT NULL,
+                    created_at      TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at      TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+    def migrate_embedding_dimension(self) -> None:
+        """One-time migration: drop and recreate company_documents for new vector(3072) dim.
+        WARNING: This drops all existing embedded document data. Run once after upgrading embeddings."""
+        self._ensure_conn()
+        with self.conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS company_documents;")
+            cur.execute("""
+                CREATE TABLE company_documents (
+                    id              SERIAL PRIMARY KEY,
+                    company_name    TEXT NOT NULL,
+                    role            TEXT NOT NULL,
+                    chunk_text      TEXT NOT NULL,
+                    chunk_index     INT NOT NULL,
+                    source_label    TEXT DEFAULT '',
+                    embedding       vector(3072) NOT NULL,
+                    contributed_by  TEXT DEFAULT '',
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_company_docs_lookup ON company_documents(company_name, role);
+            """)
 
     def close(self) -> None:
         self.conn.close()
@@ -443,3 +476,39 @@ class BodhiStorage:
                 (company_name, role),
             )
             return cur.rowcount > 0
+
+    # ── User profiles (resume-based) ──────────────────────────────
+
+    def create_user_profile(self, resume_raw_text: str, professional_summary: dict) -> str:
+        """Store a parsed resume profile. Returns the generated user_id (UUID string)."""
+        self._ensure_conn()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO user_profiles (resume_raw_text, professional_summary) "
+                "VALUES (%s, %s) RETURNING user_id::text",
+                (resume_raw_text, psycopg2.extras.Json(professional_summary)),
+            )
+            return cur.fetchone()[0]
+
+    def get_user_profile(self, user_id: str) -> dict | None:
+        """Fetch a stored user profile by UUID. Returns None if not found or invalid UUID."""
+        import uuid as _uuid
+        try:
+            _uuid.UUID(user_id)
+        except (ValueError, AttributeError):
+            return None
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT user_id::text, resume_raw_text, professional_summary, "
+                "created_at, updated_at FROM user_profiles WHERE user_id = %s::uuid",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            # professional_summary is already a dict when fetched from JSONB
+            if isinstance(result["professional_summary"], str):
+                result["professional_summary"] = json.loads(result["professional_summary"])
+            return result
