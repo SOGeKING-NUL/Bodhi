@@ -344,8 +344,19 @@ export const startInterviewStream = async (data: {
   user_id?: string;
   jd_text?: string;
   interviewer_persona?: "bodhi" | "riya";
+  demo_mode?: boolean;
+  demo_phase?: string;
 }) => {
   const headers = await getAuthHeaders({ "Content-Type": "application/json" });
+  
+  // Use demo endpoint if demo_mode is true
+  if (data.demo_mode && data.demo_phase) {
+    return fetch(`${BASE}/api/interviews/demo/${data.demo_phase}/start-stream`, {
+      method: "POST",
+      headers,
+    });
+  }
+  
   return fetch(`${BASE}/api/interviews/start-stream`, {
     method: "POST",
     headers,
@@ -470,4 +481,23 @@ export const downloadReportPDF = async (sessionId: string) => {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+};
+
+
+// ── Demo Mode ────────────────────────────────────────────
+
+/** Start a demo interview locked to a specific phase. */
+export const startDemoInterviewStream = async (phase: string) => {
+  const headers = new Headers();
+  if (typeof window !== "undefined") {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const token = await (window as any).Clerk?.session?.getToken();
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+    } catch {}
+  }
+  return fetch(`${BASE}/api/interviews/demo/${phase}/start-stream`, {
+    method: "POST",
+    headers,
+  });
 };
