@@ -378,10 +378,14 @@ export const sendMessageStream = async (sessionId: string, text: string) => {
 export const sendAudioStream = async (
   sessionId: string,
   blob: Blob,
-  filename = "audio.webm"
+  filename = "audio.webm",
+  editorContent?: string
 ) => {
   const form = new FormData();
   form.append("file", blob, filename);
+  if (editorContent && editorContent.trim()) {
+    form.append("editor_content", editorContent);
+  }
   const headers = await getAuthHeaders();
   return fetch(`${BASE}/api/interviews/${sessionId}/audio-stream`, {
     method: "POST",

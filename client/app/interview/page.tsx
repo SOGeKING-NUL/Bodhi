@@ -48,6 +48,7 @@ export default function InterviewPage() {
   const [formData, setFormData] = useState<InterviewFormData | null>(null)
   const [demoMode, setDemoMode] = useState(false)
   const [demoPhase, setDemoPhase] = useState("")
+  const [editorContent, setEditorContent] = useState("")
 
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -155,7 +156,7 @@ export default function InterviewPage() {
     }
 
     try {
-      const res = await sendAudioStream(sessionIdRef.current, wavBlob, "recording.wav")
+      const res = await sendAudioStream(sessionIdRef.current, wavBlob, "recording.wav", editorContent)
       if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`)
 
       const meta: StreamMeta = parseStreamHeaders(res)
@@ -354,6 +355,7 @@ export default function InterviewPage() {
         sentimentData={sentiment.sentimentData}
         violationCount={proctoring.violations.length}
         interviewerPersona={formData?.interviewer_persona ?? "bodhi"}
+        onEditorContentChange={setEditorContent}
       />
     </>
   )

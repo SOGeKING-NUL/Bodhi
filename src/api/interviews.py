@@ -8,7 +8,7 @@ import uuid
 import urllib.parse
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
 from fastapi.responses import StreamingResponse
 
 from langchain_core.messages import HumanMessage
@@ -962,13 +962,14 @@ async def send_audio_stream(
     session_id: str,
     file: UploadFile = File(...),
     image_file: Optional[UploadFile] = File(None),
+    editor_content: Optional[str] = Form(None),
     user_id: str = Depends(require_auth),
     graph=Depends(get_graph),
     storage: BodhiStorage = Depends(get_storage),
     cache: BodhiCache | None = Depends(get_cache),
     sarvam_key: str = Depends(get_sarvam_key),
 ):
-    """Upload WAV audio (+ optional webcam frame) and stream reply audio as MP3."""
+    """Upload WAV audio (+ optional webcam frame + optional editor content) and stream reply audio as MP3."""
     graph_config = {"configurable": {"thread_id": session_id}}
 
     try:
@@ -997,6 +998,25 @@ async def send_audio_stream(
     transcript = (transcript or "").strip()
     if not transcript:
         raise HTTPException(422, "Could not transcribe audio")
+    
+    # ── Append editor content if provided (for technical/DSA phases) ──────────
+    user_input = transcript
+    if editor_content and editor_content.strip():
+        # Get current phase to determine if we should include editor context
+        try:
+            state = graph.get_state(graph_config)
+            current_phase = state.values.get("current_phase", "") if state and state.values else ""
+            
+            # Only include editor content for technical and DSA phases
+            if current_phase in ["technical", "dsa"]:
+                user_input = (
+                    f"{transcript}\n\n"
+                    f"[Code Editor Content]:\n"
+                    f"```\n{editor_content.strip()}\n```"
+                )
+                _stream_log.info(f"[AUDIO-STREAM] Including editor content ({len(editor_content)} chars) for {current_phase} phase")
+        except Exception as e:
+            _stream_log.warning(f"Failed to check phase for editor content: {e}")
 
     # ── Sentiment analysis ────────────────────────────────────────────────────
     loop = asyncio.get_running_loop()
@@ -1075,7 +1095,7 @@ async def send_audio_stream(
     result = await loop.run_in_executor(
         None,
         lambda: graph.invoke(
-            {"messages": [HumanMessage(content=transcript)]},
+            {"messages": [HumanMessage(content=user_input)]},
             config=graph_config,
         ),
     )
