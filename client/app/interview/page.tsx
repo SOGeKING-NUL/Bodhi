@@ -46,6 +46,9 @@ export default function InterviewPage() {
   const [downloadingPDF, setDownloadingPDF] = useState(false);
   const [error, setError] = useState("");
   const [formData, setFormData] = useState<InterviewFormData | null>(null)
+  const [demoMode, setDemoMode] = useState(false)
+  const [demoPhase, setDemoPhase] = useState("")
+  const [editorContent, setEditorContent] = useState("")
 
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -86,6 +89,7 @@ export default function InterviewPage() {
     const params = new URLSearchParams(window.location.search)
     const mode = params.get("mode") as "option_a" | "option_b" | null
     const userId = params.get("user_id")
+<<<<<<< HEAD
     const company = params.get("company")
     const role = params.get("role")
     
@@ -109,6 +113,52 @@ export default function InterviewPage() {
       } else if (company || role) {
         setFormData(baseFormData)
       }
+=======
+    const isDemoMode = params.get("demo") === "true"
+    const phase = params.get("phase")
+    
+    if (isDemoMode && phase) {
+      // Set demo mode state
+      setDemoMode(true)
+      setDemoPhase(phase)
+      
+      // Auto-start demo mode
+      setFormData({
+        candidate_name: "Demo User",
+        company: "GrowthX",
+        role: "Software Engineer",
+        mode: "standard",
+        user_id: "",
+        jd_text: "",
+        interviewer_persona: "bodhi",
+      })
+      // Trigger form submit with demo params
+      setTimeout(() => {
+        handleFormSubmit({
+          candidate_name: "Demo User",
+          company: "GrowthX",
+          role: "Software Engineer",
+          mode: "standard",
+          user_id: "",
+          jd_text: "",
+          interviewer_persona: "bodhi",
+        }, true, phase)
+      }, 100)
+    } else if (mode && userId) {
+      setFormData((prev) => ({
+        ...(prev || {
+          candidate_name: "",
+          company: "",
+          role: "Software Engineer",
+          mode: "standard",
+          user_id: "",
+          jd_text: "",
+          interviewer_persona: "bodhi",
+        }),
+        mode,
+        user_id: userId,
+      }))
+>>>>>>> d5824ffbc6110abbc08ebec81ffb3e92d2351d55
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -132,7 +182,7 @@ export default function InterviewPage() {
     }
 
     try {
-      const res = await sendAudioStream(sessionIdRef.current, wavBlob, "recording.wav")
+      const res = await sendAudioStream(sessionIdRef.current, wavBlob, "recording.wav", editorContent)
       if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`)
 
       const meta: StreamMeta = parseStreamHeaders(res)
@@ -171,7 +221,7 @@ export default function InterviewPage() {
     }
   }, [audio, proctoring, refreshSession, sentiment, router])
 
-  const handleFormSubmit = async (data: InterviewFormData) => {
+  const handleFormSubmit = async (data: InterviewFormData, isDemoMode = false, demoPhase = "") => {
     setFormData(data)
     setError("")
     setPhase("processing")
@@ -182,12 +232,14 @@ export default function InterviewPage() {
       const res = await startInterviewStream({
         ...data,
         interviewer_persona: data.interviewer_persona ?? "bodhi",
+        demo_mode: isDemoMode,
+        demo_phase: demoPhase,
       })
       if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`)
 
       const meta: StreamMeta = parseStreamHeaders(res)
       if (meta.session) setSessionId(meta.session)
-      if (meta.text) setTranscript([{ speaker: "bodhi", text: meta.text, phase: "intro" }])
+      if (meta.text) setTranscript([{ speaker: "bodhi", text: meta.text, phase: isDemoMode ? demoPhase : "intro" }])
 
       if (meta.session) {
         proctoring.connectWebSocket(meta.session, "")
@@ -247,10 +299,17 @@ export default function InterviewPage() {
       <div className="min-h-screen bg-[#F7F5F3]">
         <Navbar />
         <div className="mx-auto max-w-lg space-y-6 pt-28 px-4 pb-12">
-          <PageHeader
-            title="Mock Interview"
-            description="Hands-free voice conversation. Speak naturally — your interviewer listens, responds, and loops."
-          />
+          <div className="flex items-center justify-between">
+            <PageHeader
+              title={demoMode ? `Demo: ${demoPhase.charAt(0).toUpperCase() + demoPhase.slice(1)} Phase` : "Mock Interview"}
+              description={demoMode ? `Testing ${demoPhase} questions with GrowthX context` : "Hands-free voice conversation. Speak naturally — your interviewer listens, responds, and loops."}
+            />
+            {demoMode && (
+              <span className="rounded-full bg-blue-100 px-3 py-1 text-xs font-medium text-blue-700">
+                DEMO MODE
+              </span>
+            )}
+          </div>
           {error && (
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 animate-fade-in-up">
               {error}
@@ -263,6 +322,36 @@ export default function InterviewPage() {
               initialData={formData || undefined}
             />
           </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Render: Initial Setup Loading ──────────────────────────────────
+  if (phase === "processing" && transcript.length === 0) {
+    return (
+      <div className="min-h-screen bg-[#F7F5F3] flex items-center justify-center">
+        <div className="text-center space-y-6 px-4">
+          <div className="relative">
+            <div className="h-20 w-20 mx-auto">
+              <div className="absolute inset-0 rounded-full border-4 border-[#E5E3E0] animate-pulse" />
+              <div className="absolute inset-0 rounded-full border-4 border-[#37322F] border-t-transparent animate-spin" />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-2xl font-semibold text-[#37322F]">
+              {demoMode ? `Preparing ${demoPhase} demo...` : "Setting up your interview..."}
+            </h2>
+            <p className="text-sm text-[#6B6662]">
+              Initializing camera, microphone, and AI interviewer
+            </p>
+          </div>
+          {demoMode && (
+            <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 px-4 py-2 text-sm font-medium text-blue-700">
+              <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+              Demo Mode
+            </div>
+          )}
         </div>
       </div>
     )
@@ -296,6 +385,7 @@ export default function InterviewPage() {
         sentimentData={sentiment.sentimentData}
         violationCount={proctoring.violations.length}
         interviewerPersona={formData?.interviewer_persona ?? "bodhi"}
+        onEditorContentChange={setEditorContent}
       />
     </>
   )

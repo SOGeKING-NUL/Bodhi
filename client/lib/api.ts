@@ -344,8 +344,19 @@ export const startInterviewStream = async (data: {
   user_id?: string;
   jd_text?: string;
   interviewer_persona?: "bodhi" | "riya";
+  demo_mode?: boolean;
+  demo_phase?: string;
 }) => {
   const headers = await getAuthHeaders({ "Content-Type": "application/json" });
+  
+  // Use demo endpoint if demo_mode is true
+  if (data.demo_mode && data.demo_phase) {
+    return fetch(`${BASE}/api/interviews/demo/${data.demo_phase}/start-stream`, {
+      method: "POST",
+      headers,
+    });
+  }
+  
   return fetch(`${BASE}/api/interviews/start-stream`, {
     method: "POST",
     headers,
@@ -367,10 +378,14 @@ export const sendMessageStream = async (sessionId: string, text: string) => {
 export const sendAudioStream = async (
   sessionId: string,
   blob: Blob,
-  filename = "audio.webm"
+  filename = "audio.webm",
+  editorContent?: string
 ) => {
   const form = new FormData();
   form.append("file", blob, filename);
+  if (editorContent && editorContent.trim()) {
+    form.append("editor_content", editorContent);
+  }
   const headers = await getAuthHeaders();
   return fetch(`${BASE}/api/interviews/${sessionId}/audio-stream`, {
     method: "POST",

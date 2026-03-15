@@ -6,8 +6,9 @@ import base64
 import os
 import uuid
 import urllib.parse
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
 from fastapi.responses import StreamingResponse
 
 from langchain_core.messages import HumanMessage
@@ -24,6 +25,10 @@ from src.api.models import (
 from src.cache import BodhiCache
 from src.services.llm import _extract_text
 from src.storage import BodhiStorage
+
+import logging as _logging
+
+_log = _logging.getLogger("bodhi.api.interviews")
 
 router = APIRouter(prefix="/api/interviews", tags=["interviews"])
 
@@ -505,7 +510,7 @@ async def end_interview(
         raise HTTPException(404, f"Session '{session_id}' not found")
 
     vals = state.values
-    summary, overall_score = _flush_session_sync(session_id, vals, storage, cache)
+    summary, overall_score = _flush_session_sync(session_id, vals, storage, cache, clerk_user_id=user_id)
 
     return SessionEndResponse(
         session_id=session_id,
@@ -524,6 +529,7 @@ def _flush_session_sync(
     state: dict,
     storage: BodhiStorage,
     cache: BodhiCache | None,
+    clerk_user_id: str | None = None,
 ) -> tuple[str, float | None]:
     """Flush session data to NeonDB, trigger RAG contribution, clean up Redis.
     Returns (summary, overall_score)."""
@@ -596,6 +602,14 @@ def _flush_session_sync(
             summary = f"Interview complete. {total_q} questions across {len(scores)} phases."
         
         storage.end_session(session_id, overall_score=overall_score, summary=summary, report_data=report_data)
+
+        # ── Gamification ──────────────────────────────────────────────
+        if clerk_user_id and report_data:
+            try:
+                _process_gamification(clerk_user_id, session_id, report_data, storage)
+            except Exception as ge:
+                _log.warning(f"Gamification processing failed (non-critical): {ge}")
+
     except Exception:
         pass
 
@@ -615,6 +629,127 @@ def _flush_session_sync(
             pass
 
     return summary, overall_score
+
+
+def _process_gamification(
+    clerk_user_id: str,
+    session_id: str,
+    report_data: dict,
+    storage: BodhiStorage,
+) -> None:
+    """Award XP, update streak, check badges, enter challenges. Non-critical."""
+    from src.gamification import (
+        calculate_xp, check_badges, compute_new_streak,
+        get_rank_tier, check_challenge_qualification,
+    )
+    from datetime import date
+
+    # Current stats
+    stats = storage.get_user_stats(clerk_user_id)
+    current_streak = stats.get("current_streak", 0)
+    last_session_date = stats.get("last_session_date")
+    total_sessions = stats.get("total_sessions", 0) + 1
+
+    # Streak update
+    today = date.today()
+    if isinstance(last_session_date, str):
+        from datetime import datetime
+        last_session_date = datetime.strptime(last_session_date, "%Y-%m-%d").date() if last_session_date else None
+    new_streak = compute_new_streak(last_session_date, current_streak, today)
+    longest_streak = max(stats.get("longest_streak", 0), new_streak)
+
+    # Phase results for difficulty bonus
+    phase_results = []
+    try:
+        phase_results = storage.get_answer_scores.__func__  # handled below
+    except Exception:
+        pass
+    try:
+        with storage.conn.cursor(cursor_factory=__import__('psycopg2').extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT phase, difficulty_reached FROM phase_results WHERE session_id = %s",
+                (session_id,),
+            )
+            phase_results = [dict(r) for r in cur.fetchall()]
+    except Exception:
+        phase_results = []
+
+    # XP calculation
+    xp_earned, breakdown = calculate_xp(report_data, phase_results, new_streak)
+
+    # Update cumulative stats
+    old_total_xp = stats.get("total_xp", 0)
+    new_total_xp = old_total_xp + xp_earned
+    overall_score = report_data.get("overall_score_pct", 0)
+    old_avg = stats.get("avg_score_pct", 0.0)
+    new_avg = round(
+        (old_avg * (total_sessions - 1) + overall_score) / total_sessions, 1
+    )
+    new_best = max(stats.get("best_score_pct", 0.0), overall_score)
+    new_tier = get_rank_tier(new_total_xp)
+
+    # Get display name from user profile
+    display_name = None
+    try:
+        with storage.conn.cursor() as cur:
+            cur.execute(
+                "SELECT professional_summary->>'name' FROM user_profiles WHERE clerk_user_id = %s",
+                (clerk_user_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                display_name = row[0]
+    except Exception:
+        pass
+
+    # Save everything
+    storage.upsert_user_stats(
+        clerk_user_id=clerk_user_id,
+        total_xp=new_total_xp,
+        total_sessions=total_sessions,
+        best_score_pct=new_best,
+        avg_score_pct=new_avg,
+        current_streak=new_streak,
+        longest_streak=longest_streak,
+        last_session_date=today,
+        rank_tier=new_tier,
+        display_name=display_name,
+    )
+    storage.log_xp(clerk_user_id, session_id, xp_earned, breakdown)
+
+    # Badges
+    existing_ids = {b["badge_id"] for b in storage.get_user_badges(clerk_user_id)}
+    clean_count = storage.get_clean_session_count(clerk_user_id)
+    new_badge_ids = check_badges(
+        report_data=report_data,
+        total_sessions=total_sessions,
+        current_streak=new_streak,
+        existing_badge_ids=existing_ids,
+        clean_session_count=clean_count,
+    )
+    for badge_id in new_badge_ids:
+        storage.award_badge(clerk_user_id, badge_id, session_id)
+
+    # Challenge auto-entry
+    try:
+        challenge = storage.get_active_challenge()
+        if challenge:
+            criteria = challenge.get("criteria", {})
+            if isinstance(criteria, str):
+                import json
+                criteria = json.loads(criteria)
+            qualifies, q_score = check_challenge_qualification(
+                report_data, criteria, phase_results
+            )
+            if qualifies:
+                entered = storage.try_enter_challenge(
+                    challenge["id"], clerk_user_id, session_id, q_score
+                )
+                if entered:
+                    # Award challenge_accepted badge if first entry
+                    storage.award_badge(clerk_user_id, "challenge_accepted", session_id)
+    except Exception as ce:
+        _log.warning(f"Challenge auto-entry failed: {ce}")
 
 
 # ── Streaming endpoints ───────────────────────────────────────────
@@ -961,13 +1096,14 @@ async def send_audio_stream(
     session_id: str,
     file: UploadFile = File(...),
     image_file: Optional[UploadFile] = File(None),
+    editor_content: Optional[str] = Form(None),
     user_id: str = Depends(require_auth),
     graph=Depends(get_graph),
     storage: BodhiStorage = Depends(get_storage),
     cache: BodhiCache | None = Depends(get_cache),
     sarvam_key: str = Depends(get_sarvam_key),
 ):
-    """Upload WAV audio (+ optional webcam frame) and stream reply audio as MP3."""
+    """Upload WAV audio (+ optional webcam frame + optional editor content) and stream reply audio as MP3."""
     graph_config = {"configurable": {"thread_id": session_id}}
 
     try:
@@ -996,6 +1132,25 @@ async def send_audio_stream(
     transcript = (transcript or "").strip()
     if not transcript:
         raise HTTPException(422, "Could not transcribe audio")
+    
+    # ── Append editor content if provided (for technical/DSA phases) ──────────
+    user_input = transcript
+    if editor_content and editor_content.strip():
+        # Get current phase to determine if we should include editor context
+        try:
+            state = graph.get_state(graph_config)
+            current_phase = state.values.get("current_phase", "") if state and state.values else ""
+            
+            # Only include editor content for technical and DSA phases
+            if current_phase in ["technical", "dsa"]:
+                user_input = (
+                    f"{transcript}\n\n"
+                    f"[Code Editor Content]:\n"
+                    f"```\n{editor_content.strip()}\n```"
+                )
+                _stream_log.info(f"[AUDIO-STREAM] Including editor content ({len(editor_content)} chars) for {current_phase} phase")
+        except Exception as e:
+            _stream_log.warning(f"Failed to check phase for editor content: {e}")
 
     # ── Sentiment analysis ────────────────────────────────────────────────────
     loop = asyncio.get_running_loop()
@@ -1074,7 +1229,7 @@ async def send_audio_stream(
     result = await loop.run_in_executor(
         None,
         lambda: graph.invoke(
-            {"messages": [HumanMessage(content=transcript)]},
+            {"messages": [HumanMessage(content=user_input)]},
             config=graph_config,
         ),
     )
@@ -1463,3 +1618,149 @@ def _generate_pdf_report(report_data: dict) -> bytes:
     buffer.close()
     
     return pdf_bytes
+
+
+
+# ── Demo Mode Endpoints ───────────────────────────────────────────────────────
+
+@router.post("/demo/{phase}/start-stream")
+async def start_demo_interview_stream(
+    phase: str,
+    user_id: str = Depends(require_auth),
+    graph=Depends(get_graph),
+    storage: BodhiStorage = Depends(get_storage),
+    cache: BodhiCache | None = Depends(get_cache),
+    sarvam_key: str = Depends(get_sarvam_key),
+):
+    """Start a demo interview locked to a specific phase.
+    
+    Available phases: intro, technical, behavioral, dsa, project
+    
+    Uses GrowthX as the default company for context.
+    """
+    from src.state import PHASES, DEMO_PHASE_CONFIG
+    import json
+    
+    # Validate phase
+    valid_demo_phases = ["intro", "technical", "behavioral", "dsa", "project"]
+    if phase not in valid_demo_phases:
+        raise HTTPException(400, f"Invalid phase. Must be one of: {', '.join(valid_demo_phases)}")
+    
+    loop = asyncio.get_event_loop()
+    session_id = f"demo-{phase}-{uuid.uuid4().hex[:8]}"
+    
+    # Use GrowthX as default company
+    company = "GrowthX"
+    role = "Software Engineer"
+    candidate_name = "Demo User"
+    
+    _stream_log.info("[DEMO-START] Session %s: phase=%s", session_id, phase)
+    
+    # Load GrowthX context
+    entity_context = await loop.run_in_executor(
+        None, lambda: _load_entity_context(company, role, cache, storage)
+    )
+    suggested_topics = await loop.run_in_executor(
+        None, lambda: _load_suggested_topics(company, role, cache)
+    )
+    
+    # Generate curriculum for the specific phase only
+    curriculum = {}
+    if phase in ["technical", "dsa"]:
+        full_curriculum = await loop.run_in_executor(
+            None, lambda: generate_interview_curriculum(company, role, storage)
+        )
+        if phase in full_curriculum:
+            curriculum[phase] = full_curriculum[phase]
+    
+    if cache and curriculum:
+        for p, questions in curriculum.items():
+            cache.set_question_queue(session_id, p, questions)
+    
+    # Create session in database
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda: storage.create_session(
+                session_id,
+                candidate_name,
+                company,
+                role,
+                clerk_user_id=user_id,
+            ),
+        )
+    except Exception:
+        pass
+    
+    # Build initial state with demo mode enabled
+    graph_config = {"configurable": {"thread_id": session_id}}
+    
+    # Phase-specific greeting prompts
+    phase_greetings = {
+        "intro": "Hello! I'm ready to introduce myself.",
+        "technical": "Hello! I'm ready for technical questions.",
+        "behavioral": "Hello! I'm ready for behavioral questions.",
+        "dsa": "Hello! I'm ready for coding and algorithm questions.",
+        "project": "Hello! I'm ready to discuss my projects.",
+    }
+    
+    initial_state = {
+        "messages": [HumanMessage(content=phase_greetings.get(phase, "Hello!"))],
+        "session_id": session_id,
+        "candidate_name": candidate_name,
+        "target_company": company,
+        "target_role": role,
+        "current_phase": phase,
+        "difficulty_level": 3,
+        "interviewer_persona": "bodhi",
+        "phase_scores": {},
+        "entity_context": entity_context,
+        "suggested_topics": suggested_topics,
+        "should_end": False,
+        "queued_questions": curriculum,
+        "target_question": "",
+        "interview_mode": "standard",
+        "candidate_profile": {},
+        "jd_context": "",
+        "gap_map": {},
+        "demo_mode": True,
+        "demo_phase": phase,
+        "phase_question_count": 0,
+        "phase_start_time": datetime.now(timezone.utc).isoformat(),
+    }
+    
+    _stream_log.info("[DEMO-START] Session %s: invoking graph for greeting...", session_id)
+    result = await loop.run_in_executor(
+        None, lambda: graph.invoke(initial_state, config=graph_config)
+    )
+    greeting = _extract_text(
+        result["messages"][-1].content
+        if result["messages"] and hasattr(result["messages"][-1], "content")
+        else ""
+    )
+    _stream_log.info("[DEMO-START] Session %s: greeting ready (%d chars)", session_id, len(greeting))
+    
+    if not sarvam_key or not greeting:
+        raise HTTPException(500, "TTS not available")
+    
+    # Get phase config for frontend
+    phase_config = DEMO_PHASE_CONFIG.get(phase, {})
+    curriculum_json = json.dumps({
+        "phase": phase,
+        "max_questions": phase_config.get("max_questions", 3),
+        "demo_mode": True,
+    })
+    
+    headers = _stream_headers(
+        Session=session_id,
+        Text=greeting,
+        Phase=phase,
+        End="false",
+        Curriculum=curriculum_json,
+    )
+    
+    return StreamingResponse(
+        _tts_stream_generator(greeting, sarvam_key, speaker="shubh"),
+        media_type="audio/mpeg",
+        headers=headers,
+    )

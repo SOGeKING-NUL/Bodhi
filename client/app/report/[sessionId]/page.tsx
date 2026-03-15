@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Navbar from "@/components/Navbar"
 import { type InterviewReport, getInterviewReport, downloadReportPDF } from "@/lib/api"
+import { type SessionXP, getSessionXP } from "@/lib/api"
 
 /* ── helpers ─────────────────────────────────────────────────── */
 
@@ -83,7 +84,11 @@ export default function ReportPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [downloadingPDF, setDownloadingPDF] = useState(false)
+<<<<<<< HEAD
   const [showSuccessToast, setShowSuccessToast] = useState(false)
+=======
+  const [sessionXP, setSessionXP] = useState<SessionXP | null>(null)
+>>>>>>> d5824ffbc6110abbc08ebec81ffb3e92d2351d55
 
   useEffect(() => {
     if (!sessionId) return
@@ -92,6 +97,13 @@ export default function ReportPage() {
       .then(setReport)
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false))
+  }, [sessionId])
+
+  useEffect(() => {
+    if (!sessionId) return
+    getSessionXP(sessionId)
+      .then(setSessionXP)
+      .catch(() => {}) // non-critical
   }, [sessionId])
 
   const handleDownloadPDF = async () => {
@@ -230,6 +242,65 @@ export default function ReportPage() {
             )}
           </button>
         </div>
+
+        {/* ── XP & Gamification ───────────────────────────────────── */}
+        {sessionXP && sessionXP.xp_earned > 0 && (
+          <section className="rounded-2xl border border-[rgba(55,50,47,0.08)] bg-gradient-to-br from-[#37322F] to-[#4a443f] p-6 text-white shadow-[0px_4px_20px_rgba(55,50,47,0.15)]">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <p className="text-xs text-white/60 uppercase tracking-wider mb-1">Session XP Earned</p>
+                <p className="text-4xl font-extrabold tracking-tight">+{sessionXP.xp_earned.toLocaleString()} XP</p>
+              </div>
+              {/* Breakdown pills */}
+              <div className="flex flex-wrap gap-2">
+                {sessionXP.breakdown.base !== undefined && sessionXP.breakdown.base > 0 && (
+                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium">
+                    Base +{sessionXP.breakdown.base}
+                  </span>
+                )}
+                {sessionXP.breakdown.difficulty !== undefined && sessionXP.breakdown.difficulty > 0 && (
+                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium">
+                    Difficulty +{sessionXP.breakdown.difficulty}
+                  </span>
+                )}
+                {sessionXP.breakdown.behavioral !== undefined && sessionXP.breakdown.behavioral > 0 && (
+                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium">
+                    Behavioral +{sessionXP.breakdown.behavioral}
+                  </span>
+                )}
+                {sessionXP.breakdown.integrity !== undefined && sessionXP.breakdown.integrity > 0 && (
+                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium">
+                    Integrity +{sessionXP.breakdown.integrity}
+                  </span>
+                )}
+                {sessionXP.breakdown.streak_multiplier !== undefined && sessionXP.breakdown.streak_multiplier > 1 && (
+                  <span className="rounded-full bg-amber-400/20 text-amber-300 px-3 py-1 text-xs font-semibold">
+                    🔥 {sessionXP.breakdown.streak_multiplier}× streak
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* New badges */}
+            {sessionXP.new_badges.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-white/10">
+                <p className="text-xs text-white/60 mb-2 uppercase tracking-wider">New Badges Unlocked</p>
+                <div className="flex flex-wrap gap-2">
+                  {sessionXP.new_badges.map((badge) => (
+                    <div
+                      key={badge.id}
+                      className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 border border-white/10"
+                    >
+                      <span>{badge.icon}</span>
+                      <span className="text-xs font-semibold text-white">{badge.name}</span>
+                      <span className="text-[10px] text-white/50 capitalize">{badge.rarity}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
         {/* ── Phase Breakdown ────────────────────────────────────── */}
         <section className="space-y-4">

@@ -248,6 +248,107 @@ class BodhiStorage:
             except Exception:
                 pass
 
+            # ── Gamification tables ──────────────────────────────────────
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_stats (
+                        clerk_user_id   TEXT PRIMARY KEY,
+                        display_name    TEXT,
+                        total_xp        INT NOT NULL DEFAULT 0,
+                        total_sessions  INT NOT NULL DEFAULT 0,
+                        best_score_pct  REAL NOT NULL DEFAULT 0,
+                        avg_score_pct   REAL NOT NULL DEFAULT 0,
+                        current_streak  INT NOT NULL DEFAULT 0,
+                        longest_streak  INT NOT NULL DEFAULT 0,
+                        last_session_date DATE,
+                        streak_shields  INT NOT NULL DEFAULT 0,
+                        rank_tier       TEXT NOT NULL DEFAULT 'Novice',
+                        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS xp_log (
+                        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        clerk_user_id   TEXT NOT NULL,
+                        session_id      TEXT NOT NULL,
+                        xp_earned       INT NOT NULL,
+                        breakdown       JSONB NOT NULL DEFAULT '{}',
+                        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_badges (
+                        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        clerk_user_id   TEXT NOT NULL,
+                        badge_id        TEXT NOT NULL,
+                        session_id      TEXT,
+                        earned_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(clerk_user_id, badge_id)
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS weekly_challenges (
+                        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        week_start      DATE NOT NULL,
+                        week_end        DATE NOT NULL,
+                        title           TEXT NOT NULL,
+                        description     TEXT NOT NULL,
+                        challenge_type  TEXT NOT NULL,
+                        criteria        JSONB NOT NULL DEFAULT '{}',
+                        prize_description TEXT NOT NULL,
+                        recruiter_info  JSONB,
+                        max_winners     INT NOT NULL DEFAULT 3,
+                        status          TEXT NOT NULL DEFAULT 'active',
+                        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(week_start)
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS challenge_entries (
+                        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        challenge_id    UUID NOT NULL,
+                        clerk_user_id   TEXT NOT NULL,
+                        session_id      TEXT NOT NULL,
+                        qualifying_score REAL NOT NULL,
+                        rank            INT,
+                        is_winner       BOOL NOT NULL DEFAULT FALSE,
+                        submitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(challenge_id, clerk_user_id)
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_xp_log_user ON xp_log(clerk_user_id, created_at DESC);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_user_badges_user ON user_badges(clerk_user_id);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_challenge_entries_challenge ON challenge_entries(challenge_id, qualifying_score DESC);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_weekly_challenges_week ON weekly_challenges(week_start);")
+            except Exception:
+                pass
+
+            # Seed weekly challenges if none exist
+            try:
+                self._seed_challenges_if_empty(cur)
+            except Exception:
+                pass
+
     def migrate_embedding_dimension(self) -> None:
         """One-time migration: drop and recreate company_documents for new vector(3072) dim.
         WARNING: This drops all existing embedded document data."""
@@ -847,3 +948,321 @@ class BodhiStorage:
             if isinstance(result["professional_summary"], str):
                 result["professional_summary"] = json.loads(result["professional_summary"])
             return result
+
+    # ── Gamification ─────────────────────────────────────────────────────────
+
+    def get_user_stats(self, clerk_user_id: str) -> dict:
+        """Get user gamification stats, creating defaults if not found."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM user_stats WHERE clerk_user_id = %s", (clerk_user_id,))
+            row = cur.fetchone()
+        if row:
+            return dict(row)
+        return {
+            "clerk_user_id": clerk_user_id,
+            "display_name": None,
+            "total_xp": 0,
+            "total_sessions": 0,
+            "best_score_pct": 0.0,
+            "avg_score_pct": 0.0,
+            "current_streak": 0,
+            "longest_streak": 0,
+            "last_session_date": None,
+            "streak_shields": 0,
+            "rank_tier": "Novice",
+        }
+
+    def upsert_user_stats(
+        self,
+        clerk_user_id: str,
+        total_xp: int,
+        total_sessions: int,
+        best_score_pct: float,
+        avg_score_pct: float,
+        current_streak: int,
+        longest_streak: int,
+        last_session_date,
+        rank_tier: str,
+        display_name: str | None = None,
+    ) -> None:
+        """Insert or update user stats row."""
+        self._ensure_conn()
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO user_stats
+                    (clerk_user_id, display_name, total_xp, total_sessions, best_score_pct,
+                     avg_score_pct, current_streak, longest_streak, last_session_date, rank_tier, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (clerk_user_id) DO UPDATE SET
+                    display_name      = COALESCE(EXCLUDED.display_name, user_stats.display_name),
+                    total_xp          = EXCLUDED.total_xp,
+                    total_sessions    = EXCLUDED.total_sessions,
+                    best_score_pct    = EXCLUDED.best_score_pct,
+                    avg_score_pct     = EXCLUDED.avg_score_pct,
+                    current_streak    = EXCLUDED.current_streak,
+                    longest_streak    = EXCLUDED.longest_streak,
+                    last_session_date = EXCLUDED.last_session_date,
+                    rank_tier         = EXCLUDED.rank_tier,
+                    updated_at        = NOW()
+            """, (
+                clerk_user_id, display_name, total_xp, total_sessions,
+                best_score_pct, avg_score_pct, current_streak, longest_streak,
+                last_session_date, rank_tier,
+            ))
+
+    def log_xp(self, clerk_user_id: str, session_id: str, xp_earned: int, breakdown: dict) -> None:
+        """Record an XP event for a session."""
+        self._ensure_conn()
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO xp_log (clerk_user_id, session_id, xp_earned, breakdown)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+            """, (clerk_user_id, session_id, xp_earned, json.dumps(breakdown)))
+
+    def get_session_xp(self, session_id: str) -> dict | None:
+        """Get the XP log entry for a specific session."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM xp_log WHERE session_id = %s", (session_id,))
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def get_user_badges(self, clerk_user_id: str) -> list[dict]:
+        """Get all badges for a user."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT badge_id, session_id, earned_at FROM user_badges "
+                "WHERE clerk_user_id = %s ORDER BY earned_at",
+                (clerk_user_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def award_badge(self, clerk_user_id: str, badge_id: str, session_id: str | None = None) -> bool:
+        """Award a badge. Returns True if newly awarded, False if already had it."""
+        self._ensure_conn()
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO user_badges (clerk_user_id, badge_id, session_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (clerk_user_id, badge_id) DO NOTHING
+            """, (clerk_user_id, badge_id, session_id))
+            return cur.rowcount > 0
+
+    def get_clean_session_count(self, clerk_user_id: str) -> int:
+        """Count sessions with zero proctoring violations for a user."""
+        self._ensure_conn()
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM sessions s
+                WHERE s.clerk_user_id = %s
+                  AND s.ended_at IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM proctoring_violations pv WHERE pv.session_id = s.id
+                  )
+            """, (clerk_user_id,))
+            return cur.fetchone()[0]
+
+    def get_global_leaderboard(self, limit: int = 100) -> list[dict]:
+        """All-time XP leaderboard."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    us.clerk_user_id,
+                    COALESCE(us.display_name, up.professional_summary->>'name', 'Anonymous') AS display_name,
+                    us.total_xp,
+                    us.total_sessions,
+                    us.best_score_pct,
+                    us.current_streak,
+                    us.rank_tier
+                FROM user_stats us
+                LEFT JOIN user_profiles up ON up.clerk_user_id = us.clerk_user_id
+                ORDER BY us.total_xp DESC
+                LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def get_weekly_leaderboard(self, limit: int = 100) -> list[dict]:
+        """XP earned in the last 7 days, ranked."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    xl.clerk_user_id,
+                    COALESCE(us.display_name, up.professional_summary->>'name', 'Anonymous') AS display_name,
+                    SUM(xl.xp_earned) AS weekly_xp,
+                    us.rank_tier,
+                    us.total_xp
+                FROM xp_log xl
+                LEFT JOIN user_stats us ON us.clerk_user_id = xl.clerk_user_id
+                LEFT JOIN user_profiles up ON up.clerk_user_id = xl.clerk_user_id
+                WHERE xl.created_at >= NOW() - INTERVAL '7 days'
+                GROUP BY xl.clerk_user_id, us.display_name, up.professional_summary, us.rank_tier, us.total_xp
+                ORDER BY weekly_xp DESC
+                LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def get_user_session_history(self, clerk_user_id: str, limit: int = 20) -> list[dict]:
+        """Get recent completed sessions for a user."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    s.id AS session_id,
+                    s.target_company,
+                    s.target_role,
+                    s.overall_score,
+                    s.started_at,
+                    s.ended_at,
+                    COALESCE(xl.xp_earned, 0) AS xp_earned
+                FROM sessions s
+                LEFT JOIN xp_log xl ON xl.session_id = s.id
+                WHERE s.clerk_user_id = %s AND s.ended_at IS NOT NULL
+                ORDER BY s.started_at DESC
+                LIMIT %s
+            """, (clerk_user_id, limit))
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_active_challenge(self) -> dict | None:
+        """Get the currently active weekly challenge."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id::text, week_start, week_end, title, description,
+                       challenge_type, criteria, prize_description, recruiter_info,
+                       max_winners, status, created_at
+                FROM weekly_challenges
+                WHERE status = 'active'
+                  AND week_start <= CURRENT_DATE
+                  AND week_end >= CURRENT_DATE
+                ORDER BY week_start DESC
+                LIMIT 1
+            """)
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def get_past_challenges(self, limit: int = 10) -> list[dict]:
+        """Get past completed challenges with winners."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT wc.id::text, wc.week_start, wc.week_end, wc.title,
+                       wc.description, wc.prize_description, wc.recruiter_info,
+                       wc.max_winners, wc.status
+                FROM weekly_challenges wc
+                WHERE wc.week_end < CURRENT_DATE
+                ORDER BY wc.week_start DESC
+                LIMIT %s
+            """, (limit,))
+            challenges = [dict(r) for r in cur.fetchall()]
+
+        # Attach winners to each challenge
+        for ch in challenges:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        ce.clerk_user_id,
+                        COALESCE(us.display_name, up.professional_summary->>'name', 'Anonymous') AS display_name,
+                        ce.qualifying_score,
+                        ce.rank,
+                        ce.is_winner
+                    FROM challenge_entries ce
+                    LEFT JOIN user_stats us ON us.clerk_user_id = ce.clerk_user_id
+                    LEFT JOIN user_profiles up ON up.clerk_user_id = ce.clerk_user_id
+                    WHERE ce.challenge_id = %s::uuid AND ce.is_winner = TRUE
+                    ORDER BY ce.rank
+                """, (ch["id"],))
+                ch["winners"] = [dict(r) for r in cur.fetchall()]
+
+        return challenges
+
+    def get_challenge_leaderboard(self, challenge_id: str) -> list[dict]:
+        """Get entries for a specific challenge, ranked by score."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    ce.clerk_user_id,
+                    COALESCE(us.display_name, up.professional_summary->>'name', 'Anonymous') AS display_name,
+                    ce.qualifying_score,
+                    ce.is_winner,
+                    ce.submitted_at,
+                    us.rank_tier
+                FROM challenge_entries ce
+                LEFT JOIN user_stats us ON us.clerk_user_id = ce.clerk_user_id
+                LEFT JOIN user_profiles up ON up.clerk_user_id = ce.clerk_user_id
+                WHERE ce.challenge_id = %s::uuid
+                ORDER BY ce.qualifying_score DESC
+            """, (challenge_id,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def try_enter_challenge(
+        self,
+        challenge_id: str,
+        clerk_user_id: str,
+        session_id: str,
+        qualifying_score: float,
+    ) -> bool:
+        """
+        Try to enter a challenge. Returns True if entered, False if already entered.
+        No re-entry: one entry per user per challenge.
+        """
+        self._ensure_conn()
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO challenge_entries (challenge_id, clerk_user_id, session_id, qualifying_score)
+                VALUES (%s::uuid, %s, %s, %s)
+                ON CONFLICT (challenge_id, clerk_user_id) DO NOTHING
+            """, (challenge_id, clerk_user_id, session_id, qualifying_score))
+            return cur.rowcount > 0
+
+    def get_user_challenge_entry(self, challenge_id: str, clerk_user_id: str) -> dict | None:
+        """Get user's entry for a specific challenge."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT ce.*, wc.title, wc.prize_description
+                FROM challenge_entries ce
+                JOIN weekly_challenges wc ON wc.id = ce.challenge_id
+                WHERE ce.challenge_id = %s::uuid AND ce.clerk_user_id = %s
+            """, (challenge_id, clerk_user_id))
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def _seed_challenges_if_empty(self, cur) -> None:
+        """Seed 8 weeks of challenges if the table is empty. Uses cursor from init_tables."""
+        cur.execute("SELECT COUNT(*) FROM weekly_challenges")
+        if cur.fetchone()[0] > 0:
+            return
+
+        from src.gamification import get_challenge_templates
+        from datetime import date, timedelta
+
+        # Find the most recent Monday on or before today
+        today = date.today()
+        days_since_monday = today.weekday()  # 0 = Monday
+        week_start = today - timedelta(days=days_since_monday)
+
+        templates = get_challenge_templates()
+        for i, tmpl in enumerate(templates):
+            ws = week_start + timedelta(weeks=i)
+            we = ws + timedelta(days=6)
+            status = "active" if ws <= today <= we else ("completed" if we < today else "active")
+            cur.execute("""
+                INSERT INTO weekly_challenges
+                    (week_start, week_end, title, description, challenge_type,
+                     criteria, prize_description, max_winners, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (week_start) DO NOTHING
+            """, (
+                ws, we,
+                tmpl["title"], tmpl["description"], tmpl["challenge_type"],
+                json.dumps(tmpl["criteria"]), tmpl["prize_description"],
+                tmpl["max_winners"], status,
+            ))
