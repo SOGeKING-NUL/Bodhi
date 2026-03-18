@@ -119,6 +119,10 @@ class InterviewStartResponse(BaseModel):
     greeting_audio_b64: str = ""
 
 
+class InterviewPrepareResponse(BaseModel):
+    session_id: str
+
+
 class MessageRequest(BaseModel):
     text: str
 

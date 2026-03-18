@@ -192,14 +192,16 @@ Once the server is running, full interactive docs are available at `/docs` (Swag
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/api/interviews` | Start a new session (returns greeting + audio) (Accepts mode and user_id) |
-| `POST` | `/api/interviews/{id}/message` | Send text, get reply + audio |
-| `POST` | `/api/interviews/{id}/audio` | Upload WAV audio, get STT + reply + audio |
+| `POST` | `/api/interviews/prepare` | Synchronously pre-load interview curriculum, context, and state caching |
+| `WS` | `/api/interviews/{id}/ws` | Full-duplex WebSocket for real-time overlapping STT/LLM/TTS audio sequence |
 | `GET` | `/api/interviews/{id}` | Get current session state |
 | `POST` | `/api/interviews/{id}/end` | End session, flush data, trigger RAG contribution |
-| `POST` | `/api/interviews/start-stream` | Start with streaming MP3 audio greeting (metadata in headers) (Accepts mode and user_id) |
-| `POST` | `/api/interviews/{id}/message-stream` | Send text, get streaming audio reply |
-| `POST` | `/api/interviews/{id}/audio-stream` | Send WAV, get streaming audio reply |
+| `POST` | `/api/interviews` | (Legacy) Start a new session over HTTP |
+| `POST` | `/api/interviews/{id}/message` | (Legacy) Send text, get reply + audio |
+| `POST` | `/api/interviews/{id}/audio` | (Legacy) Upload WAV audio, get STT + reply + audio |
+| `POST` | `/api/interviews/start-stream` | (Legacy) Start with streaming MP3 audio greeting |
+| `POST` | `/api/interviews/{id}/message-stream` | (Legacy) Send text, get streaming audio reply |
+| `POST` | `/api/interviews/{id}/audio-stream` | (Legacy) Send WAV, get streaming audio reply |
 
 ### Resumes (`/api/resumes`)
 
@@ -220,7 +222,10 @@ Once the server is running, full interactive docs are available at `/docs` (Swag
 ## How the Voice Pipeline Works
 
 ```
-Mic → VAD → Record → STT (Saaras V3) → LangGraph (Gemini) → TTS (Bulbul V3) → Speaker → Loop
+Mic → VAD (1.5s silence delay) → Frontend Audio Buffer → Backend WebSocket
+WebSocket → STT (Saaras V3) → LangGraph (Gemini) token-by-token
+LLM Token stream → Sentence Accumulator → TTS (Bulbul V3) per sentence
+TTS audio chunk → WebSocket → Speaker (zero-latency playback)
 ```
 
 ### Recording (VAD)

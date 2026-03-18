@@ -26,8 +26,8 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
   const [uploadedProfile, setUploadedProfile] = useState<CandidateProfile | null>(null)
   
   const [form, setForm] = useState<InterviewFormData>({
-    candidate_name: "",
-    company: "",
+    candidate_name: "Utsav",
+    company: "GrowthX",
     role: "Software Engineer",
     mode: "standard",
     user_id: "",

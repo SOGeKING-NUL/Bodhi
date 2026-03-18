@@ -17,6 +17,7 @@ from src.api.deps import get_cache, get_graph, get_llm, get_sarvam_key, get_stor
 from src.api.models import (
     InterviewStartRequest,
     InterviewStartResponse,
+    InterviewPrepareResponse,
     MessageRequest,
     MessageResponse,
     SessionEndResponse,
@@ -223,6 +224,73 @@ def generate_interview_curriculum(company: str, role: str, storage: BodhiStorage
     except Exception as e:
         log.error(f"Curriculum generation failed: {e}")
         return {"technical": [], "dsa": []}
+
+
+@router.post("/prepare", response_model=InterviewPrepareResponse, status_code=201)
+async def prepare_interview(
+    body: InterviewStartRequest,
+    user_id: str = Depends(require_auth),
+    storage: BodhiStorage = Depends(get_storage),
+    cache: BodhiCache | None = Depends(get_cache),
+    llm=Depends(get_llm),
+):
+    """Sync prepare: loads context, generates curriculum, and creates session_id."""
+    session_id = uuid.uuid4().hex[:12]
+
+    resolved_user_profile_id = body.user_id
+    if not resolved_user_profile_id and storage:
+        resolved_user_profile_id = storage.get_user_profile_id_by_clerk_user_id(user_id)
+
+    candidate_profile, jd_context, gap_map = _load_candidate_context(
+        body.mode, resolved_user_profile_id, body.jd_text, storage, llm
+    )
+    entity_context = _load_entity_context(body.company, body.role, cache, storage)
+    suggested_topics = _load_suggested_topics(body.company, body.role, cache)
+    
+    # Pre-generate curriculum (2 technical + 2 DSA questions)
+    curriculum = generate_interview_curriculum(body.company, body.role, storage, jd_text=body.jd_text)
+    if cache:
+        for phase, questions in curriculum.items():
+            cache.set_question_queue(session_id, phase, questions)
+
+    try:
+        storage.create_session(
+            session_id,
+            body.candidate_name,
+            body.company,
+            body.role,
+            clerk_user_id=user_id,
+            user_profile_id=resolved_user_profile_id,
+        )
+    except Exception:
+        pass
+
+    initial_state_data = {
+        "session_id": session_id,
+        "candidate_name": body.candidate_name,
+        "target_company": body.company,
+        "target_role": body.role,
+        "current_phase": "intro",
+        "difficulty_level": 3,
+        "phase_scores": {},
+        "entity_context": entity_context,
+        "suggested_topics": suggested_topics,
+        "should_end": False,
+        "interviewer_persona": body.interviewer_persona,
+        "queued_questions": curriculum,
+        "target_question": "",
+        "interview_mode": body.mode,
+        "candidate_profile": candidate_profile,
+        "jd_context": jd_context,
+        "gap_map": gap_map,
+        "clerk_user_id": user_id,
+        "user_profile_id": resolved_user_profile_id,
+    }
+    
+    if cache:
+        cache.save_initial_state(session_id, initial_state_data)
+
+    return InterviewPrepareResponse(session_id=session_id)
 
 
 @router.post("", response_model=InterviewStartResponse, status_code=201)
@@ -625,8 +693,152 @@ import re
 import asyncio
 import logging
 from typing import Optional
+from fastapi import WebSocket, WebSocketDisconnect
 
 from src.services.sentiment import analyze_tone as _analyze_tone
+from src.services.stt import transcribe_audio
+
+_stream_log = logging.getLogger("bodhi.api.stream")
+
+@router.websocket("/{session_id}/ws")
+async def interview_websocket(
+    websocket: WebSocket,
+    session_id: str,
+    graph=Depends(get_graph),
+    storage: BodhiStorage = Depends(get_storage),
+    cache: BodhiCache | None = Depends(get_cache),
+    sarvam_key: str = Depends(get_sarvam_key),
+):
+    await websocket.accept()
+
+    try:
+        initial_state = cache.get_initial_state(session_id) if cache else None
+        if not initial_state:
+            _stream_log.error(f"WS error: No setup found for session {session_id}")
+            await websocket.close(code=1008, reason="Session not prepared")
+            return
+
+        user_id = initial_state.get("clerk_user_id", "anonymous")
+        graph_config = {"configurable": {"thread_id": session_id}}
+        
+        # Load messages back (we didn't store HumanMessage in Redis)
+        from langchain_core.messages import HumanMessage
+        initial_state["messages"] = [HumanMessage(content="Hello, I'm ready for my interview.")]
+
+        # First graph invocation (Greeting)
+        result = graph.invoke(initial_state, config=graph_config)
+        greeting = ""
+        if result["messages"] and hasattr(result["messages"][-1], "content"):
+            greeting = _extract_text(result["messages"][-1].content).strip()
+
+        if cache:
+            cache.save_session_state(session_id, {
+                "phase": result.get("current_phase", initial_state.get("current_phase")),
+                "difficulty": result.get("difficulty_level", 3),
+                "scores": result.get("phase_scores", {}),
+            })
+
+        # Send TTS greeting if available
+        if sarvam_key and greeting:
+            from src.services.tts import text_to_speech_stream
+            try:
+                async for chunk in text_to_speech_stream(
+                    greeting, api_key=sarvam_key, target_language_code="hi-IN", speaker="shubh"
+                ):
+                    await websocket.send_bytes(chunk)
+            except Exception as e:
+                _stream_log.error(f"WS TTS greeting error: {e}")
+
+        # Signal greeting complete
+        await websocket.send_json({
+            "type": "control",
+            "event": "greeting_complete",
+            "text": greeting,
+            "phase": result.get("current_phase", "intro")
+        })
+
+        # Process user audio bytes
+        audio_buffer = bytearray()
+        
+        while True:
+            try:
+                message = await websocket.receive()
+                if "bytes" in message:
+                    audio_buffer.extend(message["bytes"])
+                elif "text" in message:
+                    data = _json.loads(message["text"])
+                    if data.get("type") == "event" and data.get("event") == "eos":
+                        if len(audio_buffer) == 0:
+                            continue
+                        
+                        # Process audio buffer
+                        # Assume the frontend sends WAV format directly or we pass byte wrapper
+                        
+                        transcript = ""
+                        try:
+                            transcript = transcribe_audio(
+                                bytes(audio_buffer),
+                                api_key=sarvam_key,
+                                model="saaras:v3",
+                                language_code="en-IN"
+                            )
+                        except Exception as e:
+                            _stream_log.error(f"WS STT error: {e}")
+
+                        audio_buffer.clear()
+                        transcript = (transcript or "").strip()
+                        if not transcript:
+                            continue
+
+                        # Acknowledge transcription
+                        await websocket.send_json({"type": "control", "event": "transcript", "text": transcript})
+
+                        # Feed the graph
+                        result_holder = {}
+                        async for chunk in _pipeline_audio_generator(
+                            graph, graph_config, transcript, sarvam_key, result_holder, speaker="shubh"
+                        ):
+                             if chunk:
+                                 await websocket.send_bytes(chunk)
+                        
+                        phase = result_holder.get("phase", "unknown")
+                        should_end = result_holder.get("should_end", False)
+
+                        if cache:
+                            try:
+                                state_dict = graph.get_state(graph_config).values
+                                cache.save_session_state(session_id, {
+                                    "phase": phase,
+                                    "difficulty": state_dict.get("difficulty_level", 3),
+                                    "scores": state_dict.get("phase_scores", {}),
+                                })
+                            except Exception:
+                                pass
+
+                        # Send completion meta for this turn
+                        await websocket.send_json({
+                            "type": "control",
+                            "event": "reply_complete",
+                            "text": result_holder.get("reply_text"),
+                            "phase": phase,
+                            "should_end": should_end
+                        })
+
+                        if should_end:
+                            state_dict = graph.get_state(graph_config).values
+                            _flush_session_async(session_id, state_dict, graph_config)
+                            break
+            except asyncio.CancelledError:
+                break
+    except WebSocketDisconnect:
+        _stream_log.info(f"WebSocket disconnected for {session_id}")
+    except Exception as e:
+        _stream_log.error(f"WebSocket unexpected error: {e}", exc_info=True)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 _stream_log = logging.getLogger("bodhi.api.stream")
 

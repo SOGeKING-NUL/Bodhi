@@ -15,9 +15,7 @@ import {
   type SessionEnd,
   type StreamMeta,
   type InterviewReport,
-  startInterviewStream,
-  sendAudioStream,
-  parseStreamHeaders,
+  prepareInterview,
   getSession,
   endInterview,
   downloadReportPDF,
@@ -151,49 +149,18 @@ export default function InterviewPage() {
 
     const wavBlob = audio.getRecordedAudio()
     if (!wavBlob) {
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), finishRecording)
+      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), () => finishRecording())
       return
     }
 
     try {
-      const res = await sendAudioStream(sessionIdRef.current, wavBlob, "recording.wav", editorContent)
-      if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`)
-
-      const meta: StreamMeta = parseStreamHeaders(res)
-
-      // Update sentiment data from streaming response headers
-      if (meta.sentiment) {
-        sentiment.updateFromMeta(meta)
-      }
-
-      if (meta.transcript) setTranscript((prev) => [...prev, { speaker: "user", text: meta.transcript! }])
-      if (meta.text) setTranscript((prev) => [...prev, { speaker: "bodhi", text: meta.text!, phase: meta.phase }])
-
-      setPhase("speaking")
-      phaseRef.current = "speaking"
-      await audio.playStreamingAudio(res)
-
-      if (meta.shouldEnd) {
-        setPhase("ended")
-        proctoring.endSession()
-        phaseRef.current = "ended"
-        try {
-          await endInterview(sessionIdRef.current)
-        } catch { }
-        audio.cleanup()
-        proctoring.cleanupCamera()
-        router.push(`/report/${sessionIdRef.current}`)
-        sentiment.reset()
-        return
-      }
-
-      refreshSession()
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), finishRecording)
+      audio.sendAudioWs(wavBlob)
+      // Phase transitions are handled by WebSocket callbacks (onTranscript, onReplyComplete)
     } catch (err) {
       setError(String(err))
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), finishRecording)
+      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), () => finishRecording())
     }
-  }, [audio, proctoring, refreshSession, sentiment, router])
+  }, [audio])
 
   const handleFormSubmit = async (data: InterviewFormData, isDemoMode = false, demoPhase = "") => {
     setFormData(data)
@@ -202,27 +169,57 @@ export default function InterviewPage() {
     try {
       await proctoring.initCamera()
       await audio.initMic()
-      // Pass interviewer_persona so backend uses the chosen voice/prompt
-      const res = await startInterviewStream({
+      
+      const res = await prepareInterview({
         ...data,
         interviewer_persona: data.interviewer_persona ?? "bodhi",
         demo_mode: isDemoMode,
         demo_phase: demoPhase,
+      } as any) // suppress TS type issue for demo props temporarily
+
+      const sid = res.session_id
+      setSessionId(sid)
+
+      // Connect Proctoring WS
+      proctoring.connectWebSocket(sid, "")
+
+      // Connect Interview Audio & State WS
+      audio.connectWebSocket(sid, {
+        onGreetingComplete: (text, sessionPhase) => {
+           setTranscript([{ speaker: "bodhi", text, phase: isDemoMode ? demoPhase : sessionPhase }])
+           refreshSession()
+           setPhase("speaking")
+        },
+        onTranscript: (text) => {
+           setTranscript((prev) => [...prev, { speaker: "user", text }])
+        },
+        onReplyComplete: (text, sessionPhase, shouldEnd) => {
+           setTranscript((prev) => [...prev, { speaker: "bodhi", text, phase: sessionPhase }])
+           if (shouldEnd) {
+               setPhase("ended")
+               proctoring.endSession()
+               audio.cleanup()
+               proctoring.cleanupCamera()
+               router.push(`/report/${sid}`)
+               sentiment.reset()
+           } else {
+               refreshSession()
+               setPhase("speaking")
+           }
+        },
+        onError: (err) => {
+           setError(err)
+           setPhase("idle")
+        },
+        onPlaybackComplete: () => {
+           audio.startListening(
+               () => setPhase("listening"),
+               () => setPhase("recording"),
+               finishRecording
+           )
+        }
       })
-      if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`)
 
-      const meta: StreamMeta = parseStreamHeaders(res)
-      if (meta.session) setSessionId(meta.session)
-      if (meta.text) setTranscript([{ speaker: "bodhi", text: meta.text, phase: isDemoMode ? demoPhase : "intro" }])
-
-      if (meta.session) {
-        proctoring.connectWebSocket(meta.session, "")
-      }
-
-      setPhase("speaking")
-      await audio.playStreamingAudio(res)
-      refreshSession()
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), finishRecording)
     } catch (err) {
       setError(String(err))
       setPhase("idle")

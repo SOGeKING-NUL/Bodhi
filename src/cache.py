@@ -51,8 +51,18 @@ class BodhiCache:
             return None
         return json.loads(raw)
 
+    def save_initial_state(self, session_id: str, state: dict, ttl: int = 3600) -> None:
+        self.r.setex(f"initial:{session_id}", ttl, json.dumps(state))
+
+    def get_initial_state(self, session_id: str) -> dict | None:
+        raw = self.r.get(f"initial:{session_id}")
+        if raw is None:
+            return None
+        return json.loads(raw)
+
     def delete_session(self, session_id: str) -> None:
         self.r.delete(f"session:{session_id}")
+        self.r.delete(f"initial:{session_id}")
 
     # ── RAG context cache ─────────────────────────────────────────
 

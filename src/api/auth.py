@@ -6,7 +6,8 @@ import os
 import logging
 
 import jwt
-from fastapi import Depends, HTTPException
+from typing import Union
+from fastapi import Depends, HTTPException, Request, WebSocket
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 logger = logging.getLogger("bodhi.auth")
@@ -35,19 +36,33 @@ def _get_jwks_client() -> jwt.PyJWKClient:
 _CLERK_CONFIGURED = bool(os.getenv("CLERK_FRONTEND_API_URL", "").strip())
 
 
-def verify_clerk_token(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_security),
+async def verify_clerk_token(
+    request: Request = None,
+    websocket: WebSocket = None,
 ) -> dict:
     """Verify the Bearer JWT and return its claims.
 
-    Returns an empty dict if no credentials are provided (allows
-    endpoints to be optionally authenticated).
-    When Clerk is not configured, always returns an empty dict (dev mode).
+    Handles both HTTP Request and WebSocket connections.
+    Returns an empty dict if no credentials are provided or Clerk is not configured.
     """
-    if not _CLERK_CONFIGURED or credentials is None:
+    if not _CLERK_CONFIGURED:
         return {}
 
-    token = credentials.credentials
+    conn = request or websocket
+    if not conn:
+        return {}
+
+    # Extract token from Authorization header or 'token' query param
+    token = None
+    auth_header = conn.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.removeprefix("Bearer ")
+    elif isinstance(conn, WebSocket):
+        token = conn.query_params.get("token")
+
+    if not token:
+        return {}
+
     try:
         signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
         payload = jwt.decode(

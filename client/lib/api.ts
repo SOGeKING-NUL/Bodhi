@@ -259,6 +259,25 @@ export interface SessionEnd {
   overall_score: number | null;
 }
 
+export interface InterviewPrepare {
+  session_id: string;
+}
+
+export const prepareInterview = (data: {
+  candidate_name?: string;
+  company?: string;
+  role?: string;
+  mode?: "standard" | "option_a" | "option_b";
+  user_id?: string;
+  jd_text?: string;
+  interviewer_persona?: "bodhi" | "riya";
+}) =>
+  request<InterviewPrepare>("/api/interviews/prepare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
 export const startInterview = (data: {
   candidate_name?: string;
   company?: string;
