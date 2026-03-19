@@ -741,6 +741,15 @@ async def interview_websocket(
         # Send TTS greeting if available
         if sarvam_key and greeting:
             from src.services.tts import text_to_speech_stream
+            
+            # Signal greeting start so frontend can show text
+            await websocket.send_json({
+                "type": "control",
+                "event": "greeting_start",
+                "text": greeting,
+                "phase": result.get("current_phase", "intro")
+            })
+
             try:
                 async for chunk in text_to_speech_stream(
                     greeting, api_key=sarvam_key, target_language_code="hi-IN", speaker="shubh"
@@ -749,11 +758,10 @@ async def interview_websocket(
             except Exception as e:
                 _stream_log.error(f"WS TTS greeting error: {e}")
 
-        # Signal greeting complete
+        # Signal greeting complete to trigger final flush
         await websocket.send_json({
             "type": "control",
             "event": "greeting_complete",
-            "text": greeting,
             "phase": result.get("current_phase", "intro")
         })
 
@@ -795,8 +803,15 @@ async def interview_websocket(
 
                         # Feed the graph
                         result_holder = {}
+                        
+                        async def on_token(token: str):
+                            try:
+                                await websocket.send_json({"type": "control", "event": "text_chunk", "text": token})
+                            except Exception:
+                                pass
+
                         async for chunk in _pipeline_audio_generator(
-                            graph, graph_config, transcript, sarvam_key, result_holder, speaker="shubh"
+                            graph, graph_config, transcript, sarvam_key, result_holder, speaker="shubh", token_callback=on_token
                         ):
                              if chunk:
                                  await websocket.send_bytes(chunk)
@@ -890,19 +905,15 @@ async def _sentence_accumulator(token_aiter):
         yield buf
 
 
-async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, speaker: str = "shubh"):
+async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, speaker: str = "shubh", token_callback=None):
     """Pipeline: LLM tokens → sentence accumulator → TTS audio chunks.
 
     Uses graph.astream_events() to get individual LLM tokens, accumulates
-    them into sentences, and feeds sentences to TTS concurrently.
+    them into sentences, feeds sentences to TTS concurrently, and
+    fires token_callback for real-time text streaming.
 
     Yields:
         (audio_chunk: bytes | None, meta: dict | None)
-        - audio chunks as they arrive
-        - a final meta dict with {reply_text, phase, should_end} after all audio
-
-    The meta dict is yielded LAST with audio_chunk=None so the caller can
-    extract state info for cache/headers.
     """
     from src.services.tts import tts_stream_sentences
 
@@ -927,6 +938,8 @@ async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, sp
                         token_text = _extract_text(chunk.content)
                         if token_text:
                             collected_text.append(token_text)
+                            if token_callback:
+                                await token_callback(token_text)
                             yield token_text
 
                 elif kind == "on_tool_end":
@@ -976,10 +989,10 @@ async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, sp
     yield None, {"reply_text": reply_text, "phase": phase, "should_end": should_end}
 
 
-async def _pipeline_audio_generator(graph, graph_config, user_input, sarvam_key, result_holder: dict, speaker: str = "shubh"):
+async def _pipeline_audio_generator(graph, graph_config, user_input, sarvam_key, result_holder: dict, speaker: str = "shubh", token_callback=None):
     """Async generator that yields only audio bytes from the pipeline.
     Stores the final metadata in result_holder for the caller to inspect."""
-    async for audio_chunk, meta in _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key, speaker=speaker):
+    async for audio_chunk, meta in _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key, speaker=speaker, token_callback=token_callback):
         if audio_chunk is not None:
             yield audio_chunk
         elif meta is not None:

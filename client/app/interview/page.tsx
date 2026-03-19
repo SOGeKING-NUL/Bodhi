@@ -185,16 +185,40 @@ export default function InterviewPage() {
 
       // Connect Interview Audio & State WS
       audio.connectWebSocket(sid, {
-        onGreetingComplete: (text, sessionPhase) => {
+        onGreetingStart: (text, sessionPhase) => {
            setTranscript([{ speaker: "bodhi", text, phase: isDemoMode ? demoPhase : sessionPhase }])
            refreshSession()
-           setPhase("speaking")
+        },
+        onGreetingComplete: (sessionPhase) => {
+           // Phase transitions to speaking happen during onPlaybackStart now
         },
         onTranscript: (text) => {
            setTranscript((prev) => [...prev, { speaker: "user", text }])
         },
+        onPartialReply: (chunk) => {
+           setTranscript((prev) => {
+             const newTranscript = [...prev]
+             const last = newTranscript[newTranscript.length - 1]
+             if (last && last.speaker === "bodhi") {
+               last.text += chunk
+               return newTranscript
+             } else {
+               return [...newTranscript, { speaker: "bodhi", text: chunk }]
+             }
+           })
+        },
         onReplyComplete: (text, sessionPhase, shouldEnd) => {
-           setTranscript((prev) => [...prev, { speaker: "bodhi", text, phase: sessionPhase }])
+           setTranscript((prev) => {
+             const newTranscript = [...prev]
+             const last = newTranscript[newTranscript.length - 1]
+             if (last && last.speaker === "bodhi") {
+               last.text = text
+               last.phase = sessionPhase
+               return newTranscript
+             } else {
+               return [...newTranscript, { speaker: "bodhi", text, phase: sessionPhase }]
+             }
+           })
            if (shouldEnd) {
                setPhase("ended")
                proctoring.endSession()
@@ -204,12 +228,14 @@ export default function InterviewPage() {
                sentiment.reset()
            } else {
                refreshSession()
-               setPhase("speaking")
            }
         },
         onError: (err) => {
            setError(err)
            setPhase("idle")
+        },
+        onPlaybackStart: () => {
+           setPhase("speaking")
         },
         onPlaybackComplete: () => {
            audio.startListening(

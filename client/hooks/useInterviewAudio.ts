@@ -185,6 +185,9 @@ export function useInterviewAudio() {
         const next = audioQueueRef.current.shift()!
         currentAudioRef.current = next
         
+        next.onplay = () => {
+             // Only fire callback on the very first sub-chunk 
+        }
         next.onended = () => {
             URL.revokeObjectURL(next.src)
             playNext()
@@ -201,6 +204,15 @@ export function useInterviewAudio() {
 
     if (!currentAudioRef.current || currentAudioRef.current.ended) {
         currentAudioRef.current = audio
+        audio.onplay = () => {
+            // Wait, we need a way to reach the callback from here since connectWebSocket is what provides it.
+            // We can store it in a ref.
+            if (onPlaybackStartRef.current) {
+                onPlaybackStartRef.current()
+                // Clear it so it only fires at the start of the whole response stream
+                onPlaybackStartRef.current = null
+            }
+        }
         audio.onended = () => {
             URL.revokeObjectURL(audio.src)
             playNext()
@@ -218,18 +230,25 @@ export function useInterviewAudio() {
     }
   }, [])
 
+  const onPlaybackStartRef = useRef<(() => void) | null>(null)
+
   // Callbacks interface matching what page.tsx expects
   const connectWebSocket = useCallback((
     sessionId: string,
     callbacks: {
-        onGreetingComplete: (text: string, phase: string) => void,
+        onGreetingStart: (text: string, phase: string) => void,
+        onGreetingComplete: (phase: string) => void,
         onTranscript: (text: string) => void,
+        onPartialReply: (chunk: string) => void,
         onReplyComplete: (text: string, phase: string, shouldEnd: boolean) => void,
         onError: (err: string) => void,
+        onPlaybackStart: () => void,
         onPlaybackComplete: () => void
     }
   ) => {
     onPlaybackCompleteRef.current = callbacks.onPlaybackComplete
+    onPlaybackStartRef.current = callbacks.onPlaybackStart
+    
     let baseUrl = process.env.NEXT_PUBLIC_API_URL || window.location.origin
     baseUrl = baseUrl.replace(/^http/, 'ws')
     const ws = new WebSocket(`${baseUrl}/api/interviews/${sessionId}/ws`)
@@ -239,11 +258,15 @@ export function useInterviewAudio() {
       if (typeof e.data === "string") {
          const msg = JSON.parse(e.data)
          if (msg.type === "control") {
-             if (msg.event === "greeting_complete") {
+             if (msg.event === "greeting_start") {
+                 callbacks.onGreetingStart(msg.text, msg.phase)
+             } else if (msg.event === "greeting_complete") {
                  flushPlaybackBatch()
-                 callbacks.onGreetingComplete(msg.text, msg.phase)
+                 callbacks.onGreetingComplete(msg.phase)
              } else if (msg.event === "transcript") {
                  callbacks.onTranscript(msg.text)
+             } else if (msg.event === "text_chunk") {
+                 callbacks.onPartialReply(msg.text)
              } else if (msg.event === "reply_complete") {
                  flushPlaybackBatch()
                  callbacks.onReplyComplete(msg.text, msg.phase, msg.should_end)
