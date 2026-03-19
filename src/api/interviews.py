@@ -282,11 +282,13 @@ async def prepare_interview(
     entity_context = _load_entity_context(body.company, body.role, cache, storage)
     suggested_topics = _load_suggested_topics(body.company, body.role, cache)
     
-    # Pre-generate curriculum (2 technical + 2 DSA questions)
-    curriculum = generate_interview_curriculum(body.company, body.role, storage, jd_text=body.jd_text)
-    if cache:
-        for phase, questions in curriculum.items():
-            cache.set_question_queue(session_id, phase, questions)
+    # Pre-generate curriculum (2 technical + 2 DSA questions) unless in resume-based mode
+    curriculum = {}
+    if body.mode != "option_a":
+        curriculum = generate_interview_curriculum(body.company, body.role, storage, jd_text=body.jd_text)
+        if cache:
+            for phase, questions in curriculum.items():
+                cache.set_question_queue(session_id, phase, questions)
 
     try:
         storage.create_session(
@@ -353,11 +355,13 @@ async def start_interview(
     entity_context = _load_entity_context(body.company, body.role, cache, storage)
     suggested_topics = _load_suggested_topics(body.company, body.role, cache)
     
-    # Pre-generate curriculum (2 technical + 2 DSA questions)
-    curriculum = generate_interview_curriculum(body.company, body.role, storage, jd_text=body.jd_text)
-    if cache:
-        for phase, questions in curriculum.items():
-            cache.set_question_queue(session_id, phase, questions)
+    # Pre-generate curriculum (2 technical + 2 DSA questions) unless in resume-based mode
+    curriculum = {}
+    if body.mode != "option_a":
+        curriculum = generate_interview_curriculum(body.company, body.role, storage, jd_text=body.jd_text)
+        if cache:
+            for phase, questions in curriculum.items():
+                cache.set_question_queue(session_id, phase, questions)
 
     try:
         storage.create_session(

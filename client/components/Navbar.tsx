@@ -3,10 +3,11 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useAuth } from "@clerk/nextjs"
-import { SignInButton, UserButton } from "@clerk/nextjs"
+import { SignInButton, useUser } from "@clerk/nextjs"
 
 export default function Navbar() {
   const { isSignedIn } = useAuth()
+  const { user } = useUser()
   const pathname = usePathname()
 
   const navLinks = [
@@ -114,7 +115,15 @@ export default function Navbar() {
                     ))}
                   </div>
                 </div>
-                <UserButton />
+                <Link href="/profile" className="flex items-center justify-center w-8 h-8 rounded-full bg-[rgba(55,50,47,0.1)] shadow-inner border border-white hover:shadow-md hover:scale-105 transition-all duration-200 overflow-hidden shrink-0">
+                  {user?.imageUrl ? (
+                    <img src={user.imageUrl} alt="Profile" className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-[10px] text-[rgba(55,50,47,0.6)] font-bold uppercase">
+                      {user?.firstName?.charAt(0) || user?.emailAddresses?.[0]?.emailAddress?.charAt(0) || "?"}
+                    </span>
+                  )}
+                </Link>
               </div>
             ) : (
               <SignInButton mode="modal">

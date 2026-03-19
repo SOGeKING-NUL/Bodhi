@@ -332,6 +332,24 @@ class BodhiStorage:
 
     # ── Transcripts ───────────────────────────────────────────────────────────
 
+    def get_user_interview_history(self, clerk_user_id: str) -> list[dict]:
+        """Fetch past interview sessions for a given Clerk user ID."""
+        if not clerk_user_id:
+            return []
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id as session_id, target_company, target_role, overall_score, started_at, ended_at "
+                "FROM sessions "
+                "WHERE clerk_user_id = %s "
+                "ORDER BY started_at DESC",
+                (clerk_user_id,),
+            )
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+    # ── Phase results ─────────────────────────────────────────────────────────
+
     def save_transcript_batch(
         self,
         session_id: str,

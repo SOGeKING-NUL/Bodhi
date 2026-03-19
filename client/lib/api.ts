@@ -59,6 +59,25 @@ export const upsertCurrentUser = (authToken?: string) =>
 export const getCurrentUserStatus = (authToken?: string) =>
   request<UserStatusResponse>("/api/users/me/status", undefined, authToken);
 
+export interface InterviewHistoryItem {
+  session_id: string;
+  target_company: string;
+  target_role: string;
+  overall_score: number | null;
+  started_at: string;
+  ended_at: string | null;
+}
+
+export interface UserProfileResponse {
+  clerk_user_id: string;
+  has_resume: boolean;
+  resume_data: CandidateProfile | null;
+  interview_history: InterviewHistoryItem[];
+}
+
+export const getUserProfile = (authToken?: string) =>
+  request<UserProfileResponse>("/api/users/me/profile", undefined, authToken);
+
 // ── Roles ────────────────────────────────────────────────
 
 export interface Role {
