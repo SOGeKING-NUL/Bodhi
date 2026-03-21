@@ -70,11 +70,11 @@ export default function InterviewPage() {
 
   // Re-attach camera stream to video element after phase transition
   // When phase changes from "idle" to an active state, the grid layout
-  // (with ProctoringPanel containing <video ref={videoRef}>) mounts.
+  // (with video ref) mounts.
   // The camera stream was already obtained by initCamera() but the
   // <video> element was not yet in the DOM, so we need to re-apply it.
   useEffect(() => {
-    if (phase !== "idle" && phase !== "ended") {
+    if (phase !== "idle" && phase !== "ended" && proctoring.cameraAvailable) {
       // Small delay to ensure React has committed the DOM update
       const timer = setTimeout(() => {
         proctoring.reattachStream()
@@ -86,7 +86,9 @@ export default function InterviewPage() {
   // URL params - auto-start if present
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const mode = params.get("mode") as "option_a" | "option_b" | null
+    const rawMode = params.get("mode")
+    // Map legacy mode values to new system
+    const mode = rawMode === "option_a" || rawMode === "resume" ? "option_a" : null
     const userId = params.get("user_id")
     const isDemoMode = params.get("demo") === "true"
     const phase = params.get("phase")
@@ -168,7 +170,8 @@ export default function InterviewPage() {
     setError("")
     setPhase("processing")
     try {
-      await proctoring.initCamera()
+      // Init camera (may fail gracefully — interview continues without)
+      const cameraOk = await proctoring.initCamera()
       await audio.initMic()
       
       const res = await prepareInterview({
@@ -181,8 +184,10 @@ export default function InterviewPage() {
       const sid = res.session_id
       setSessionId(sid)
 
-      // Connect Proctoring WS
-      proctoring.connectWebSocket(sid, "")
+      // Connect Proctoring WS only if camera is available
+      if (cameraOk) {
+        proctoring.connectWebSocket(sid, "")
+      }
 
       // Connect Interview Audio & State WS
       audio.connectWebSocket(sid, {
@@ -202,7 +207,11 @@ export default function InterviewPage() {
              const newTranscript = [...prev]
              const last = newTranscript[newTranscript.length - 1]
              if (last && last.speaker === "bodhi") {
-               last.text += chunk
+               // Clone the last turn before mutating to be strictly immutable
+               newTranscript[newTranscript.length - 1] = {
+                 ...last,
+                 text: last.text + chunk
+               }
                return newTranscript
              } else {
                return [...newTranscript, { speaker: "bodhi", text: chunk }]
@@ -214,8 +223,11 @@ export default function InterviewPage() {
              const newTranscript = [...prev]
              const last = newTranscript[newTranscript.length - 1]
              if (last && last.speaker === "bodhi") {
-               last.text = text
-               last.phase = sessionPhase
+               newTranscript[newTranscript.length - 1] = {
+                 ...last,
+                 text: text,
+                 phase: sessionPhase
+               }
                return newTranscript
              } else {
                return [...newTranscript, { speaker: "bodhi", text, phase: sessionPhase }]
@@ -375,7 +387,9 @@ export default function InterviewPage() {
               {demoMode ? `Preparing ${demoPhase} demo...` : "Setting up your interview..."}
             </h2>
             <p className="text-sm text-[#6B6662]">
-              Initializing camera, microphone, and AI interviewer
+              {proctoring.cameraAvailable 
+                ? "Initializing camera, microphone, and AI interviewer"
+                : "Initializing microphone and AI interviewer (voice-only mode)"}
             </p>
           </div>
           {demoMode && (
@@ -432,6 +446,7 @@ export default function InterviewPage() {
         proctoringActive={proctoring.proctoringActive}
         sessionFlagged={proctoring.sessionFlagged}
         cameraError={proctoring.cameraError}
+        cameraAvailable={proctoring.cameraAvailable}
         sentimentData={sentiment.sentimentData}
         violationCount={proctoring.violations.length}
         interviewerPersona={formData?.interviewer_persona ?? "bodhi"}

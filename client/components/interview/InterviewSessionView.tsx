@@ -39,6 +39,7 @@ interface InterviewSessionViewProps {
   proctoringActive: boolean
   sessionFlagged: boolean
   cameraError: string
+  cameraAvailable: boolean
   sentimentData?: SentimentData | null
   violationCount?: number
   interviewerPersona?: "bodhi" | "riya"
@@ -54,6 +55,7 @@ export function InterviewSessionView({
   proctoringActive,
   sessionFlagged,
   cameraError,
+  cameraAvailable,
   sentimentData,
   violationCount = 0,
   interviewerPersona = "bodhi",
@@ -132,10 +134,16 @@ export function InterviewSessionView({
                 <div className="flex items-center gap-2">
                   <div className={cn(
                     "h-2 w-2 rounded-full",
-                    sessionFlagged ? "bg-red-500" : proctoringActive ? "bg-green-500 animate-pulse" : "bg-gray-400"
+                    sessionFlagged ? "bg-red-500" 
+                      : proctoringActive ? "bg-green-500 animate-pulse" 
+                      : !cameraAvailable ? "bg-[rgba(55,50,47,0.3)]" 
+                      : "bg-gray-400"
                   )} />
                   <span className="text-xs font-medium text-[#37322F] font-sans">
-                    {sessionFlagged ? "Flagged" : proctoringActive ? "Active" : "Inactive"}
+                    {sessionFlagged ? "Flagged" 
+                      : proctoringActive ? "Active" 
+                      : !cameraAvailable ? "Disabled" 
+                      : "Inactive"}
                   </span>
                 </div>
               </div>
@@ -379,45 +387,80 @@ export function InterviewSessionView({
             </div>
           </div>
 
-          {/* Candidate (You) with Full Video Feed */}
+          {/* Candidate (You) with Video Feed or Voice-Only Fallback */}
           <div className="flex-1 flex flex-col relative">
-            {/* Full-size Video Feed */}
-            <div className="absolute inset-0">
-              <video
-                ref={videoRef}
-                autoPlay
-                muted
-                playsInline
-                className="w-full h-full object-cover bg-[#F7F5F3]"
-                style={{ transform: "scaleX(-1)" }}
-              />
-              
-              {/* Proctoring Indicator Overlay */}
-              {proctoringActive && (
-                <div className="absolute top-4 right-4 bg-green-500/90 backdrop-blur-sm rounded-full px-3 py-1.5 flex items-center gap-1.5 shadow-lg">
-                  <Eye className="w-3.5 h-3.5 text-white" />
-                  <span className="text-xs font-medium text-white font-sans">Monitored</span>
-                </div>
-              )}
+            {cameraAvailable ? (
+              /* Full-size Video Feed */
+              <div className="absolute inset-0">
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className="w-full h-full object-cover bg-[#F7F5F3]"
+                  style={{ transform: "scaleX(-1)" }}
+                />
+                
+                {/* Proctoring Indicator Overlay */}
+                {proctoringActive && (
+                  <div className="absolute top-4 right-4 bg-green-500/90 backdrop-blur-sm rounded-full px-3 py-1.5 flex items-center gap-1.5 shadow-lg">
+                    <Eye className="w-3.5 h-3.5 text-white" />
+                    <span className="text-xs font-medium text-white font-sans">Monitored</span>
+                  </div>
+                )}
 
-              {/* Recording Indicator */}
-              {phase === "recording" && (
-                <div className="absolute top-4 left-4 bg-red-500/90 backdrop-blur-sm rounded-full px-3 py-1.5 flex items-center gap-1.5 shadow-lg">
-                  <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                  <span className="text-xs font-medium text-white font-sans">Recording</span>
-                </div>
-              )}
+                {/* Recording Indicator */}
+                {phase === "recording" && (
+                  <div className="absolute top-4 left-4 bg-red-500/90 backdrop-blur-sm rounded-full px-3 py-1.5 flex items-center gap-1.5 shadow-lg">
+                    <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                    <span className="text-xs font-medium text-white font-sans">Recording</span>
+                  </div>
+                )}
 
-              {/* Bottom Label Overlay */}
-              <div className="absolute bottom-0 left-0 right-0 bg-linear-to-t from-black/60 via-black/30 to-transparent pt-12 pb-4 px-4">
-                <div className="flex flex-col items-center gap-1">
-                  <p className="text-sm font-semibold text-white font-sans drop-shadow-lg">You</p>
-                  <Badge className="text-xs bg-blue-500/90 text-white border-blue-400/50 font-sans backdrop-blur-sm">
+                {/* Bottom Label Overlay */}
+                <div className="absolute bottom-0 left-0 right-0 bg-linear-to-t from-black/60 via-black/30 to-transparent pt-12 pb-4 px-4">
+                  <div className="flex flex-col items-center gap-1">
+                    <p className="text-sm font-semibold text-white font-sans drop-shadow-lg">You</p>
+                    <Badge className="text-xs bg-blue-500/90 text-white border-blue-400/50 font-sans backdrop-blur-sm">
+                      Candidate
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* Voice-Only Fallback */
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-[#F7F5F3] to-[#EDEBE9]">
+                {/* Camera Off Icon */}
+                <div className="w-24 h-24 rounded-full bg-[rgba(55,50,47,0.08)] flex items-center justify-center mb-4">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#37322F" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-40">
+                    <path d="M16.5 12a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Z" />
+                    <path d="M2 2l20 20" />
+                    <path d="M6.7 6.7A7.5 7.5 0 0 0 4.5 12c0 4.14 3.36 7.5 7.5 7.5a7.5 7.5 0 0 0 5.3-2.2" />
+                    <path d="M19.5 12A7.5 7.5 0 0 0 12 4.5c-.96 0-1.88.18-2.72.5" />
+                  </svg>
+                </div>
+                <p className="text-sm font-semibold text-[#37322F] font-sans">Voice Only Mode</p>
+                <p className="text-xs text-[rgba(55,50,47,0.5)] mt-1 font-sans max-w-[200px] text-center">
+                  Turn on your camera for the full proctored experience
+                </p>
+
+                {/* Recording Indicator (voice-only) */}
+                {phase === "recording" && (
+                  <div className="mt-4 bg-[rgba(55,50,47,0.08)] rounded-full px-3 py-1.5 flex items-center gap-1.5">
+                    <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                    <span className="text-xs font-medium text-[#37322F] font-sans">Recording</span>
+                  </div>
+                )}
+
+                {/* Bottom Label */}
+                <div className="absolute bottom-4 flex flex-col items-center gap-1">
+                  <p className="text-sm font-semibold text-[#37322F] font-sans">You</p>
+                  <Badge className="text-xs bg-[rgba(55,50,47,0.08)] text-[#37322F] border-[rgba(55,50,47,0.12)] font-sans">
                     Candidate
                   </Badge>
                 </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>
