@@ -329,6 +329,12 @@ async def prepare_interview(
     
     if cache:
         cache.save_initial_state(session_id, initial_state_data)
+        # Verify the save actually persisted
+        verify = cache.get_initial_state(session_id)
+        if not verify:
+            raise HTTPException(503, "Failed to persist session state to cache. Check Redis connection.")
+    else:
+        raise HTTPException(503, "Cache unavailable — cannot prepare interview session.")
 
     return InterviewPrepareResponse(session_id=session_id)
 
@@ -776,9 +782,17 @@ async def interview_websocket(
     await websocket.accept()
 
     try:
-        initial_state = cache.get_initial_state(session_id) if cache else None
+        initial_state = None
+        if cache:
+            initial_state = cache.get_initial_state(session_id)
+            # Retry once after a short delay (race condition safety)
+            if not initial_state:
+                import asyncio
+                await asyncio.sleep(0.5)
+                initial_state = cache.get_initial_state(session_id)
+
         if not initial_state:
-            _stream_log.error(f"WS error: No setup found for session {session_id}")
+            _stream_log.error(f"WS error: No setup found for session {session_id} (cache={'present' if cache else 'None'})")
             await websocket.close(code=1008, reason="Session not prepared")
             return
 
