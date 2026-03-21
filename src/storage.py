@@ -234,6 +234,7 @@ class BodhiStorage:
                 cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS clerk_user_id TEXT;")
                 cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS resume_file_content BYTEA;")
                 cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS resume_file_name TEXT;")
+                cur.execute("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS full_name TEXT;")
             except Exception:
                 pass
 
@@ -891,7 +892,7 @@ class BodhiStorage:
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT user_id::text, clerk_user_id, resume_raw_text, professional_summary, "
-                "resume_file_name, created_at, updated_at FROM user_profiles WHERE user_id = %s::uuid",
+                "resume_file_name, full_name, created_at, updated_at FROM user_profiles WHERE user_id = %s::uuid",
                 (user_id,),
             )
             row = cur.fetchone()
@@ -901,3 +902,29 @@ class BodhiStorage:
             if isinstance(result["professional_summary"], str):
                 result["professional_summary"] = json.loads(result["professional_summary"])
             return result
+
+    def update_user_full_name(self, clerk_user_id: str, full_name: str) -> bool:
+        """Update the full_name for a user profile. Returns True if successful."""
+        if not clerk_user_id or not full_name:
+            return False
+        self._ensure_conn()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "UPDATE user_profiles SET full_name = %s, updated_at = NOW() "
+                "WHERE clerk_user_id = %s",
+                (full_name, clerk_user_id),
+            )
+            return cur.rowcount > 0
+
+    def get_user_full_name(self, clerk_user_id: str) -> str | None:
+        """Get the full_name for a user profile."""
+        if not clerk_user_id:
+            return None
+        self._ensure_conn()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT full_name FROM user_profiles WHERE clerk_user_id = %s",
+                (clerk_user_id,),
+            )
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None

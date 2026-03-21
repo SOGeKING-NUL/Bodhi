@@ -81,6 +81,10 @@ class UserProfileResponse(BaseModel):
     resume_data: dict | None = None
     resume_file_name: str | None = None
     interview_history: list[InterviewHistoryItem]
+    full_name: str | None = None
+
+class UpdateNameRequest(BaseModel):
+    full_name: str
 
 @router.get("/me/resume/download")
 async def download_resume(
@@ -119,10 +123,33 @@ async def get_full_user_profile(
     # Get interview history
     history = storage.get_user_interview_history(clerk_user_id)
     
+    # Get full name
+    full_name = storage.get_user_full_name(clerk_user_id)
+    
     return UserProfileResponse(
         clerk_user_id=clerk_user_id,
         has_resume=has_resume,
         resume_data=resume_data,
         resume_file_name=resume_file_name,
         interview_history=history,
+        full_name=full_name,
     )
+
+
+@router.put("/me/name")
+async def update_user_name(
+    body: UpdateNameRequest,
+    clerk_user_id: str = Depends(require_auth),
+    storage: BodhiStorage = Depends(get_storage),
+):
+    """Update the user's full name in the profile table."""
+    # Ensure user profile exists
+    storage.ensure_user_profile_for_clerk(clerk_user_id)
+    
+    # Update the name
+    success = storage.update_user_full_name(clerk_user_id, body.full_name)
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to update name")
+    
+    return {"success": True, "full_name": body.full_name}

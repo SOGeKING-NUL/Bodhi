@@ -24,6 +24,9 @@ export default function ProfilePage() {
   const [uploadError, setUploadError] = useState("")
   const [showUpload, setShowUpload] = useState(false)
   const [downloadingResume, setDownloadingResume] = useState(false)
+  const [editingName, setEditingName] = useState(false)
+  const [newName, setNewName] = useState("")
+  const [updatingName, setUpdatingName] = useState(false)
 
   useEffect(() => {
     if (isLoaded && !isSignedIn) {
@@ -102,6 +105,42 @@ export default function ProfilePage() {
     }
   }
 
+  const handleUpdateName = async () => {
+    if (!newName.trim()) {
+      setError("Name cannot be empty")
+      return
+    }
+
+    try {
+      setUpdatingName(true)
+      setError("")
+      
+      const token = await getToken()
+      const headers = new Headers()
+      headers.append("Authorization", `Bearer ${token}`)
+      headers.append("Content-Type", "application/json")
+      
+      const response = await fetch("/api/users/me/name", {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ full_name: newName.trim() }),
+      })
+      
+      if (!response.ok) {
+        throw new Error("Failed to update name")
+      }
+      
+      // Reload profile to show updated name
+      await loadProfile()
+      setEditingName(false)
+    } catch (err) {
+      console.error("Name update error:", err)
+      setError(err instanceof Error ? err.message : "Failed to update name. Please try again.")
+    } finally {
+      setUpdatingName(false)
+    }
+  }
+
   if (!isLoaded || loading) {
     return (
       <div className="min-h-screen bg-[#F7F5F3] font-sans relative overflow-hidden flex items-center justify-center">
@@ -166,12 +205,60 @@ export default function ProfilePage() {
           )}
           
           <div className="flex-1 text-center sm:text-left mt-2 sm:mt-4">
-            <h1 className="text-2xl sm:text-3xl font-bold text-[#2F3037] tracking-tight">
-              {user?.fullName || "Candidate Profile"}
-            </h1>
-            <p className="text-[#37322F]/60 font-medium">
-              {user?.emailAddresses[0]?.emailAddress}
-            </p>
+            {editingName ? (
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="Enter your name"
+                  className="w-full px-4 py-2 rounded-xl border border-[rgba(55,50,47,0.15)] bg-white text-[#2F3037] text-xl font-bold focus:outline-none focus:ring-2 focus:ring-[rgba(55,50,47,0.15)]"
+                  autoFocus
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleUpdateName}
+                    disabled={updatingName}
+                    className="px-4 py-1.5 rounded-full bg-[#37322F] text-white text-xs font-semibold hover:bg-[#2a2520] transition-colors disabled:opacity-50"
+                  >
+                    {updatingName ? "Saving..." : "Save"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingName(false)
+                      setNewName("")
+                    }}
+                    className="px-4 py-1.5 rounded-full border border-[rgba(55,50,47,0.12)] bg-white text-[#37322F] text-xs font-semibold hover:bg-[rgba(55,50,47,0.02)] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-3">
+                  <h1 className="text-2xl sm:text-3xl font-bold text-[#2F3037] tracking-tight">
+                    {profile?.full_name || user?.fullName || "Candidate Profile"}
+                  </h1>
+                  <button
+                    onClick={() => {
+                      setNewName(profile?.full_name || user?.fullName || "")
+                      setEditingName(true)
+                    }}
+                    className="p-1.5 rounded-full hover:bg-[rgba(55,50,47,0.05)] transition-colors group"
+                    title="Edit name"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[rgba(55,50,47,0.4)] group-hover:text-[#37322F]">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  </button>
+                </div>
+                <p className="text-[#37322F]/60 font-medium mt-1">
+                  {user?.emailAddresses[0]?.emailAddress}
+                </p>
+              </>
+            )}
           </div>
 
           <div className="mt-4 sm:mt-6">

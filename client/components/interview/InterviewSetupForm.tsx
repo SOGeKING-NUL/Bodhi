@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useUser } from "@clerk/nextjs"
 import { FormInput } from "@/components/ui/form-input"
 import { PrimaryButton } from "@/components/ui/primary-button"
 import { type CandidateProfile, uploadResume } from "@/lib/api"
@@ -14,13 +15,14 @@ export interface InterviewFormData {
   candidate_name: string
   company: string
   role: string
-  mode: "standard" | "option_a"
+  mode: "standard" | "option_a" | "option_b"
   user_id: string
   jd_text: string
   interviewer_persona: "bodhi" | "riya"
 }
 
 export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProps) {
+  const { user } = useUser()
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState("")
   const [uploadedProfile, setUploadedProfile] = useState<CandidateProfile | null>(null)
@@ -37,6 +39,47 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
     jd_text: "",
     interviewer_persona: "bodhi",
   })
+
+  // Load user's name from database on mount
+  useEffect(() => {
+    const loadUserName = async () => {
+      try {
+        const response = await fetch("/api/users/me/profile", {
+          headers: await (async () => {
+            const { getAuthHeaders } = await import("@/lib/api")
+            return getAuthHeaders()
+          })()
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          if (data.full_name) {
+            setForm((prev) => ({
+              ...prev,
+              candidate_name: data.full_name,
+            }))
+          } else if (user?.fullName) {
+            // Fallback to Clerk name if no database name
+            setForm((prev) => ({
+              ...prev,
+              candidate_name: user.fullName || "",
+            }))
+          }
+        }
+      } catch (err) {
+        console.log("Could not load user name:", err)
+        // Fallback to Clerk name
+        if (user?.fullName) {
+          setForm((prev) => ({
+            ...prev,
+            candidate_name: user.fullName || "",
+          }))
+        }
+      }
+    }
+
+    loadUserName()
+  }, [user])
 
   const handleResumeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -120,6 +163,47 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
       }))
       checkExistingProfile()
     }
+  }
+
+  // When JD field is shown, check if user has resume and switch to option_b mode
+  const handleShowJdField = () => {
+    setShowJdField(true)
+    
+    // Check if user has a resume profile
+    const checkResumeForJD = async () => {
+      try {
+        const response = await fetch("/api/users/me/status", {
+          headers: await (async () => {
+            const { getAuthHeaders } = await import("@/lib/api")
+            return getAuthHeaders()
+          })()
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+
+          if (data.has_resume && data.user_id) {
+            const { getResumeProfile } = await import("@/lib/api")
+            const profile = await getResumeProfile(data.user_id)
+
+            if (profile) {
+              // Switch to option_b mode (JD-targeted with resume)
+              setForm((prev) => ({
+                ...prev,
+                mode: "option_b",
+                user_id: data.user_id,
+                candidate_name: profile.name || prev.candidate_name,
+              }))
+              setUploadedProfile(profile)
+            }
+          }
+        }
+      } catch (err) {
+        console.log("No existing profile found for JD mode:", err)
+      }
+    }
+
+    checkResumeForJD()
   }
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
@@ -300,7 +384,7 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
           {!showJdField ? (
             <button
               type="button"
-              onClick={() => setShowJdField(true)}
+              onClick={handleShowJdField}
               className="flex items-center gap-2 text-xs font-medium text-[rgba(55,50,47,0.55)] hover:text-[#37322F] transition-colors duration-200 group"
             >
               <span className="flex items-center justify-center w-5 h-5 rounded-full border border-[rgba(55,50,47,0.2)] group-hover:border-[#37322F] transition-colors">
@@ -322,13 +406,27 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
                   type="button"
                   onClick={() => {
                     setShowJdField(false)
-                    setForm((prev) => ({ ...prev, jd_text: "" }))
+                    setForm((prev) => ({ ...prev, jd_text: "", mode: "standard", user_id: "" }))
+                    setUploadedProfile(null)
                   }}
                   className="text-xs text-[rgba(55,50,47,0.45)] hover:text-[#37322F] transition"
                 >
                   Remove
                 </button>
               </div>
+              {uploadedProfile && (
+                <div className="rounded-xl border border-[rgba(55,50,47,0.15)] bg-[#F7F5F3] p-3 mb-3 animate-fade-in-up">
+                  <p className="text-xs font-medium text-[#37322F] flex items-center gap-2">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                      <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Using your resume profile for JD-targeted interview
+                  </p>
+                  <p className="text-[10px] text-[rgba(55,50,47,0.5)] mt-1">
+                    {uploadedProfile.name} • {uploadedProfile.skills?.length || 0} skills
+                  </p>
+                </div>
+              )}
               <textarea
                 placeholder="Paste the job description here to tailor your interview questions..."
                 value={form.jd_text}

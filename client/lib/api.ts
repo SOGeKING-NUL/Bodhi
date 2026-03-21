@@ -74,6 +74,7 @@ export interface UserProfileResponse {
   resume_data: CandidateProfile | null;
   resume_file_name: string | null;
   interview_history: InterviewHistoryItem[];
+  full_name: string | null;
 }
 
 export const getUserProfile = (authToken?: string) =>
