@@ -6,9 +6,10 @@ import base64
 import os
 import uuid
 import urllib.parse
+import asyncio
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from langchain_core.messages import HumanMessage
@@ -17,6 +18,7 @@ from src.api.deps import get_cache, get_graph, get_llm, get_sarvam_key, get_stor
 from src.api.models import (
     InterviewStartRequest,
     InterviewStartResponse,
+    InterviewPrepareResponse,
     MessageRequest,
     MessageResponse,
     SessionEndResponse,
@@ -141,9 +143,41 @@ def _load_suggested_topics(company: str, role: str, cache) -> str:
     return "\n".join(f"  - {t}" for t in topics)
 
 
+def _seniority_to_difficulty(candidate_profile: dict, explicit_level: str = "") -> int:
+    """Derive an initial interview difficulty from explicit level or parsed resume profile."""
+    level = (explicit_level or "").lower()
+    if "fresher" in level or "intern" in level or "junior" in level:
+        return 2
+    if "senior" in level or "2+" in level:
+        return 4
+    if "mid" in level or "1-2" in level:
+        return 3
+
+    seniority = (candidate_profile.get("seniority_level") or "").lower()
+    years = candidate_profile.get("years_of_experience") or 0
+    try:
+        years = float(years)
+    except (TypeError, ValueError):
+        years = 0
+
+    level_map = {
+        "intern": 2, "junior": 2,
+        "mid": 3,
+        "senior": 4,
+        "staff": 5, "principal": 5, "executive": 5,
+    }
+    if seniority in level_map:
+        return level_map[seniority]
+    if years < 2: return 2
+    if years < 7: return 3
+    if years < 10: return 4
+    return 5
+
+
 _CURRICULUM_PROMPT = """\
 You are an expert technical interviewer preparing a custom interview curriculum.
 Generate exactly 2 targeted questions for each of the following 2 phases for a {role} at {company}.
+The candidate's experience level is: {experience_level}. Tailor the difficulty, expectations, and nature of the questions accordingly.
 Use the provided company profile and job description to make the questions highly specific and realistic.
 
 COMPANY PROFILE:
@@ -159,7 +193,7 @@ Each key must contain a list of exactly 2 question strings.
 DO NOT include any markdown blocks (like ```json), just raw JSON.
 """
 
-def generate_interview_curriculum(company: str, role: str, storage: BodhiStorage, jd_text: str = "") -> dict:
+def generate_interview_curriculum(company: str, role: str, experience_level: str, storage: BodhiStorage, jd_text: str = "") -> dict:
     """Generate 2 technical + 2 DSA pre-decided questions based on company profile and JD."""
     from src.services.llm import create_llm, _extract_text
     from langchain_core.messages import HumanMessage
@@ -197,7 +231,7 @@ def generate_interview_curriculum(company: str, role: str, storage: BodhiStorage
     
     llm = create_llm(api_key=os.getenv("GOOGLE_API_KEY", ""))
     prompt = _CURRICULUM_PROMPT.format(
-        role=role, company=company, profile_text=profile_text, jd_block=jd_block
+        role=role, company=company, experience_level=experience_level, profile_text=profile_text, jd_block=jd_block
     )
     
     try:
@@ -229,6 +263,90 @@ def generate_interview_curriculum(company: str, role: str, storage: BodhiStorage
         return {"technical": [], "dsa": []}
 
 
+@router.post("/prepare", response_model=InterviewPrepareResponse, status_code=201)
+async def prepare_interview(
+    body: InterviewStartRequest,
+    user_id: str = Depends(require_auth),
+    storage: BodhiStorage = Depends(get_storage),
+    cache: BodhiCache | None = Depends(get_cache),
+    llm=Depends(get_llm),
+):
+    """Sync prepare: loads context, generates curriculum, and creates session_id."""
+    session_id = uuid.uuid4().hex[:12]
+
+    resolved_user_profile_id = body.user_id
+    if not resolved_user_profile_id and storage:
+        resolved_user_profile_id = storage.get_user_profile_id_by_clerk_user_id(user_id)
+
+    candidate_profile, jd_context, gap_map = _load_candidate_context(
+        body.mode, resolved_user_profile_id, body.jd_text, storage, llm
+    )
+    entity_context = _load_entity_context(body.company, body.role, cache, storage)
+    suggested_topics = _load_suggested_topics(body.company, body.role, cache)
+    
+    experience_level_used = body.experience_level
+    if body.mode != "standard" and resolved_user_profile_id and storage:
+        db_exp = storage.get_user_experience_level(user_id)
+        if db_exp:
+            experience_level_used = db_exp
+
+    # Pre-generate curriculum (2 technical + 2 DSA questions) unless in resume-based mode
+    curriculum = {}
+    if body.mode != "option_a":
+        curriculum = generate_interview_curriculum(body.company, body.role, experience_level_used, storage, jd_text=body.jd_text)
+        if cache:
+            for phase, questions in curriculum.items():
+                cache.set_question_queue(session_id, phase, questions)
+
+    try:
+        storage.create_session(
+            session_id,
+            body.candidate_name,
+            body.company,
+            body.role,
+            clerk_user_id=user_id,
+            user_profile_id=resolved_user_profile_id,
+        )
+    except Exception:
+        pass
+
+    # Determine initial difficulty from candidate seniority
+    difficulty_level = _seniority_to_difficulty(candidate_profile, explicit_level=experience_level_used) if candidate_profile or experience_level_used else 3
+
+    initial_state_data = {
+        "session_id": session_id,
+        "candidate_name": body.candidate_name,
+        "target_company": body.company,
+        "target_role": body.role,
+        "current_phase": "intro",
+        "difficulty_level": difficulty_level,
+        "phase_scores": {},
+        "entity_context": entity_context,
+        "suggested_topics": suggested_topics,
+        "should_end": False,
+        "interviewer_persona": body.interviewer_persona,
+        "queued_questions": curriculum,
+        "target_question": "",
+        "interview_mode": body.mode,
+        "candidate_profile": candidate_profile,
+        "jd_context": jd_context,
+        "gap_map": gap_map,
+        "clerk_user_id": user_id,
+        "user_profile_id": resolved_user_profile_id,
+    }
+    
+    if cache:
+        cache.save_initial_state(session_id, initial_state_data)
+        # Verify the save actually persisted
+        verify = cache.get_initial_state(session_id)
+        if not verify:
+            raise HTTPException(503, "Failed to persist session state to cache. Check Redis connection.")
+    else:
+        raise HTTPException(503, "Cache unavailable — cannot prepare interview session.")
+
+    return InterviewPrepareResponse(session_id=session_id)
+
+
 @router.post("", response_model=InterviewStartResponse, status_code=201)
 async def start_interview(
     body: InterviewStartRequest,
@@ -251,11 +369,19 @@ async def start_interview(
     entity_context = _load_entity_context(body.company, body.role, cache, storage)
     suggested_topics = _load_suggested_topics(body.company, body.role, cache)
     
-    # Pre-generate curriculum (2 technical + 2 DSA questions)
-    curriculum = generate_interview_curriculum(body.company, body.role, storage, jd_text=body.jd_text)
-    if cache:
-        for phase, questions in curriculum.items():
-            cache.set_question_queue(session_id, phase, questions)
+    experience_level_used = body.experience_level
+    if body.mode != "standard" and resolved_user_profile_id and storage:
+        db_exp = storage.get_user_experience_level(user_id)
+        if db_exp:
+            experience_level_used = db_exp
+
+    # Pre-generate curriculum (2 technical + 2 DSA questions) unless in resume-based mode
+    curriculum = {}
+    if body.mode != "option_a":
+        curriculum = generate_interview_curriculum(body.company, body.role, experience_level_used, storage, jd_text=body.jd_text)
+        if cache:
+            for phase, questions in curriculum.items():
+                cache.set_question_queue(session_id, phase, questions)
 
     try:
         storage.create_session(
@@ -269,6 +395,9 @@ async def start_interview(
     except Exception:
         pass
 
+    # Determine initial difficulty from candidate seniority
+    difficulty_level = _seniority_to_difficulty(candidate_profile, explicit_level=experience_level_used) if candidate_profile or experience_level_used else 3
+
     graph_config = {"configurable": {"thread_id": session_id}}
     initial_state = {
         "messages": [HumanMessage(content="Hello, I'm ready for my interview.")],
@@ -277,7 +406,7 @@ async def start_interview(
         "target_company": body.company,
         "target_role": body.role,
         "current_phase": "intro",
-        "difficulty_level": 3,
+        "difficulty_level": difficulty_level,
         "phase_scores": {},
         "entity_context": entity_context,
         "suggested_topics": suggested_topics,
@@ -494,6 +623,7 @@ async def get_session(
 @router.post("/{session_id}/end", response_model=SessionEndResponse)
 async def end_interview(
     session_id: str,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(require_auth),
     graph=Depends(get_graph),
     storage: BodhiStorage = Depends(get_storage),
@@ -510,12 +640,13 @@ async def end_interview(
         raise HTTPException(404, f"Session '{session_id}' not found")
 
     vals = state.values
-    summary, overall_score = _flush_session_sync(session_id, vals, storage, cache, clerk_user_id=user_id)
+    # Schedule the synchronous flushing (and report generation) to run in the background
+    background_tasks.add_task(_flush_session_sync, session_id, vals, storage, cache)
 
     return SessionEndResponse(
         session_id=session_id,
-        summary=summary,
-        overall_score=overall_score,
+        summary="Report generation in progress...",
+        overall_score=None,
     )
 
 
@@ -561,14 +692,6 @@ def _flush_session_sync(
         for phase, data in scores.items():
             q = data.get("questions", 0)
             s = data.get("total_score", 0)
-            storage.save_phase_result(
-                session_id,
-                phase,
-                score=s / q if q else 0,
-                question_count=q,
-                difficulty_reached=state.get("difficulty_level", 3),
-                feedback=data.get("feedback", []),
-            )
             total_score += s
             total_q += q
 
@@ -576,8 +699,8 @@ def _flush_session_sync(
         
         # Generate comprehensive report
         try:
-            phase_memories = storage.get_phase_memories(session_id)
-            answer_scores = storage.get_answer_scores(session_id)
+            phase_memories = state.get("phase_memories", {})
+            answer_scores = state.get("answer_scores", [])
             proctoring_violations = storage.get_proctoring_violations(session_id)
             sentiment_data = storage.get_sentiment_data(session_id)
             session_info = {
@@ -587,6 +710,23 @@ def _flush_session_sync(
                 "session_id": session_id,
             }
             
+            # Look up custom metrics for this company+role
+            company_custom_metrics: list[str] = []
+            try:
+                company_profiles = storage.get_company_profiles(state.get("target_company", ""))
+                target_role_lower = state.get("target_role", "").lower()
+                for cp in company_profiles:
+                    if cp.get("role", "").lower() in (target_role_lower, "general"):
+                        raw_cm = cp.get("custom_metrics") or []
+                        if isinstance(raw_cm, str):
+                            import json as _cjson
+                            raw_cm = _cjson.loads(raw_cm)
+                        if raw_cm:
+                            company_custom_metrics = raw_cm
+                            break
+            except Exception:
+                pass
+
             report_data = generate_report(
                 phase_memories=phase_memories,
                 answer_scores=answer_scores,
@@ -594,6 +734,8 @@ def _flush_session_sync(
                 proctoring_violations=proctoring_violations,
                 sentiment_data=sentiment_data,
                 session_info=session_info,
+                transcript_text=transcript_text,
+                custom_metrics=company_custom_metrics,
             )
             
             summary = report_data.get("hiring_recommendation", f"Interview complete. {total_q} questions across {len(scores)} phases.")
@@ -759,8 +901,175 @@ import re
 import asyncio
 import logging
 from typing import Optional
+from fastapi import WebSocket, WebSocketDisconnect
 
 from src.services.sentiment import analyze_tone as _analyze_tone
+from src.services.stt import transcribe_audio
+
+_stream_log = logging.getLogger("bodhi.api.stream")
+
+@router.websocket("/{session_id}/ws")
+async def interview_websocket(
+    websocket: WebSocket,
+    session_id: str,
+    graph=Depends(get_graph),
+    storage: BodhiStorage = Depends(get_storage),
+    cache: BodhiCache | None = Depends(get_cache),
+    sarvam_key: str = Depends(get_sarvam_key),
+):
+    await websocket.accept()
+
+    try:
+        initial_state = None
+        if cache:
+            initial_state = cache.get_initial_state(session_id)
+            # Retry once after a short delay (race condition safety)
+            if not initial_state:
+                import asyncio
+                await asyncio.sleep(0.5)
+                initial_state = cache.get_initial_state(session_id)
+
+        if not initial_state:
+            _stream_log.error(f"WS error: No setup found for session {session_id} (cache={'present' if cache else 'None'})")
+            await websocket.close(code=1008, reason="Session not prepared")
+            return
+
+        user_id = initial_state.get("clerk_user_id", "anonymous")
+        graph_config = {"configurable": {"thread_id": session_id}}
+        
+        # Load messages back (we didn't store HumanMessage in Redis)
+        from langchain_core.messages import HumanMessage
+        initial_state["messages"] = [HumanMessage(content="Hello, I'm ready for my interview.")]
+
+        # First graph invocation (Greeting)
+        result = graph.invoke(initial_state, config=graph_config)
+        greeting = ""
+        if result["messages"] and hasattr(result["messages"][-1], "content"):
+            greeting = _extract_text(result["messages"][-1].content).strip()
+
+        if cache:
+            cache.save_session_state(session_id, {
+                "phase": result.get("current_phase", initial_state.get("current_phase")),
+                "difficulty": result.get("difficulty_level", 3),
+                "scores": result.get("phase_scores", {}),
+            })
+
+        # Send TTS greeting if available
+        if sarvam_key and greeting:
+            from src.services.tts import text_to_speech_stream
+            
+            # Signal greeting start so frontend can show text
+            await websocket.send_json({
+                "type": "control",
+                "event": "greeting_start",
+                "text": greeting,
+                "phase": result.get("current_phase", "intro")
+            })
+
+            try:
+                async for chunk in text_to_speech_stream(
+                    greeting, api_key=sarvam_key, target_language_code="hi-IN", speaker="shubh"
+                ):
+                    await websocket.send_bytes(chunk)
+            except Exception as e:
+                _stream_log.error(f"WS TTS greeting error: {e}")
+
+        # Signal greeting complete to trigger final flush
+        await websocket.send_json({
+            "type": "control",
+            "event": "greeting_complete",
+            "phase": result.get("current_phase", "intro")
+        })
+
+        # Process user audio bytes
+        audio_buffer = bytearray()
+        
+        while True:
+            try:
+                message = await websocket.receive()
+                if "bytes" in message:
+                    audio_buffer.extend(message["bytes"])
+                elif "text" in message:
+                    data = _json.loads(message["text"])
+                    if data.get("type") == "event" and data.get("event") == "eos":
+                        if len(audio_buffer) == 0:
+                            continue
+                        
+                        # Process audio buffer
+                        # Assume the frontend sends WAV format directly or we pass byte wrapper
+                        
+                        transcript = ""
+                        try:
+                            transcript = transcribe_audio(
+                                bytes(audio_buffer),
+                                api_key=sarvam_key,
+                                model="saaras:v3",
+                                language_code="en-IN"
+                            )
+                        except Exception as e:
+                            _stream_log.error(f"WS STT error: {e}")
+
+                        audio_buffer.clear()
+                        transcript = (transcript or "").strip()
+                        if not transcript:
+                            continue
+
+                        # Acknowledge transcription
+                        await websocket.send_json({"type": "control", "event": "transcript", "text": transcript})
+
+                        # Feed the graph
+                        result_holder = {}
+                        
+                        async def on_token(token: str):
+                            try:
+                                await websocket.send_json({"type": "control", "event": "text_chunk", "text": token})
+                            except Exception:
+                                pass
+
+                        async for chunk in _pipeline_audio_generator(
+                            graph, graph_config, transcript, sarvam_key, result_holder, speaker="shubh", token_callback=on_token
+                        ):
+                             if chunk:
+                                 await websocket.send_bytes(chunk)
+                        
+                        phase = result_holder.get("phase", "unknown")
+                        should_end = result_holder.get("should_end", False)
+
+                        if cache:
+                            try:
+                                state_dict = graph.get_state(graph_config).values
+                                cache.save_session_state(session_id, {
+                                    "phase": phase,
+                                    "difficulty": state_dict.get("difficulty_level", 3),
+                                    "scores": state_dict.get("phase_scores", {}),
+                                })
+                            except Exception:
+                                pass
+
+                        # Send completion meta for this turn
+                        await websocket.send_json({
+                            "type": "control",
+                            "event": "reply_complete",
+                            "text": result_holder.get("reply_text"),
+                            "phase": phase,
+                            "should_end": should_end
+                        })
+
+                        if should_end:
+                            state_dict = graph.get_state(graph_config).values
+                            _flush_session_async(session_id, state_dict, graph_config)
+                            break
+            except asyncio.CancelledError:
+                break
+    except WebSocketDisconnect:
+        _stream_log.info(f"WebSocket disconnected for {session_id}")
+    except Exception as e:
+        _stream_log.error(f"WebSocket unexpected error: {e}", exc_info=True)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 _stream_log = logging.getLogger("bodhi.api.stream")
 
@@ -801,30 +1110,30 @@ async def _sentence_accumulator(token_aiter):
             # All but last part are complete sentences
             for sentence in parts[:-1]:
                 sentence = sentence.strip()
+                if "[END_INTERVIEW]" in sentence:
+                    sentence = sentence.replace("[END_INTERVIEW]", "").strip()
                 if sentence:
                     _stream_log.info("[ACCUMULATOR] Yielding sentence: %s", sentence[:80])
                     yield sentence
             buf = parts[-1]
     # Flush remainder
     buf = buf.strip()
+    if "[END_INTERVIEW]" in buf:
+        buf = buf.replace("[END_INTERVIEW]", "").strip()
     if buf:
         _stream_log.info("[ACCUMULATOR] Yielding final fragment: %s", buf[:80])
         yield buf
 
 
-async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, speaker: str = "shubh"):
+async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, speaker: str = "shubh", token_callback=None):
     """Pipeline: LLM tokens → sentence accumulator → TTS audio chunks.
 
     Uses graph.astream_events() to get individual LLM tokens, accumulates
-    them into sentences, and feeds sentences to TTS concurrently.
+    them into sentences, feeds sentences to TTS concurrently, and
+    fires token_callback for real-time text streaming.
 
     Yields:
         (audio_chunk: bytes | None, meta: dict | None)
-        - audio chunks as they arrive
-        - a final meta dict with {reply_text, phase, should_end} after all audio
-
-    The meta dict is yielded LAST with audio_chunk=None so the caller can
-    extract state info for cache/headers.
     """
     from src.services.tts import tts_stream_sentences
 
@@ -844,12 +1153,20 @@ async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, sp
                 kind = event.get("event", "")
 
                 if kind == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
-                    if chunk and hasattr(chunk, "content"):
-                        token_text = _extract_text(chunk.content)
-                        if token_text:
-                            collected_text.append(token_text)
-                            yield token_text
+                    node_name = event.get("metadata", {}).get("langgraph_node", "")
+                    if node_name in ("interviewer", ""):
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk and hasattr(chunk, "content"):
+                            token_text = _extract_text(chunk.content)
+                            if token_text:
+                                collected_text.append(token_text)
+                                if token_callback:
+                                    await token_callback(token_text)
+                                yield token_text
+                                
+                                current_text = "".join(collected_text)
+                                if "[END_INTERVIEW]" in current_text:
+                                    should_end = True
 
                 elif kind == "on_tool_end":
                     output = event.get("data", {}).get("output", "")
@@ -892,16 +1209,20 @@ async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, sp
         pass
 
     reply_text = "".join(collected_text).strip()
+    if "[END_INTERVIEW]" in reply_text:
+        should_end = True
+        reply_text = reply_text.replace("[END_INTERVIEW]", "").strip()
+
     _stream_log.info("[PIPELINE] Done: %d audio chunks, %d chars reply, phase=%s, end=%s",
                      chunk_count, len(reply_text), phase, should_end)
 
     yield None, {"reply_text": reply_text, "phase": phase, "should_end": should_end}
 
 
-async def _pipeline_audio_generator(graph, graph_config, user_input, sarvam_key, result_holder: dict, speaker: str = "shubh"):
+async def _pipeline_audio_generator(graph, graph_config, user_input, sarvam_key, result_holder: dict, speaker: str = "shubh", token_callback=None):
     """Async generator that yields only audio bytes from the pipeline.
     Stores the final metadata in result_holder for the caller to inspect."""
-    async for audio_chunk, meta in _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key, speaker=speaker):
+    async for audio_chunk, meta in _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key, speaker=speaker, token_callback=token_callback):
         if audio_chunk is not None:
             yield audio_chunk
         elif meta is not None:

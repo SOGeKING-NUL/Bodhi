@@ -32,6 +32,7 @@ export default function InterviewPage() {
   const router = useRouter()
   const [sessionId, setSessionId] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
+  const [interviewPhase, setInterviewPhase] = useState<string>("intro");
   const [transcript, setTranscript] = useState<Turn[]>([]);
   const [error, setError] = useState("");
   const [formData, setFormData] = useState<InterviewFormData | null>(null)
@@ -60,11 +61,11 @@ export default function InterviewPage() {
 
   // Re-attach camera stream to video element after phase transition
   // When phase changes from "idle" to an active state, the grid layout
-  // (with ProctoringPanel containing <video ref={videoRef}>) mounts.
+  // (with video ref) mounts.
   // The camera stream was already obtained by initCamera() but the
   // <video> element was not yet in the DOM, so we need to re-apply it.
   useEffect(() => {
-    if (phase !== "idle" && phase !== "ended") {
+    if (phase !== "idle" && phase !== "ended" && proctoring.cameraAvailable) {
       // Small delay to ensure React has committed the DOM update
       const timer = setTimeout(() => {
         proctoring.reattachStream()
@@ -76,7 +77,9 @@ export default function InterviewPage() {
   // URL params - auto-start if present
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const mode = params.get("mode") as "option_a" | "option_b" | null
+    const rawMode = params.get("mode")
+    // Map legacy mode values to new system
+    const mode = rawMode === "option_a" || rawMode === "resume" ? "option_a" : null
     const userId = params.get("user_id")
     const company = params.get("company")
     const role = params.get("role")
@@ -93,6 +96,7 @@ export default function InterviewPage() {
         candidate_name: "Demo User",
         company: "GrowthX",
         role: "Software Engineer",
+        experience_level: "Mid-Level",
         mode: "standard",
         user_id: "",
         jd_text: "",
@@ -104,6 +108,7 @@ export default function InterviewPage() {
           candidate_name: "Demo User",
           company: "GrowthX",
           role: "Software Engineer",
+          experience_level: "Mid-Level",
           mode: "standard",
           user_id: "",
           jd_text: "",
@@ -147,78 +152,115 @@ export default function InterviewPage() {
 
     const wavBlob = audio.getRecordedAudio()
     if (!wavBlob) {
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), finishRecording)
+      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), () => finishRecording())
       return
     }
 
     try {
-      const res = await sendAudioStream(sessionIdRef.current, wavBlob, "recording.wav", editorContent)
-      if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`)
-
-      const meta: StreamMeta = parseStreamHeaders(res)
-
-      // Update sentiment data from streaming response headers
-      if (meta.sentiment) {
-        sentiment.updateFromMeta(meta)
-      }
-
-      if (meta.transcript) setTranscript((prev) => [...prev, { speaker: "user", text: meta.transcript! }])
-      if (meta.text) setTranscript((prev) => [...prev, { speaker: "bodhi", text: meta.text!, phase: meta.phase }])
-
-      setPhase("speaking")
-      phaseRef.current = "speaking"
-      await audio.playStreamingAudio(res)
-
-      if (meta.shouldEnd) {
-        setPhase("ended")
-        proctoring.endSession()
-        phaseRef.current = "ended"
-        try {
-          await endInterview(sessionIdRef.current)
-        } catch { }
-        audio.cleanup()
-        proctoring.cleanupCamera()
-        router.push(`/report/${sessionIdRef.current}`)
-        sentiment.reset()
-        return
-      }
-
-      refreshSession()
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), finishRecording)
+      audio.sendAudioWs(wavBlob)
+      // Phase transitions are handled by WebSocket callbacks (onTranscript, onReplyComplete)
     } catch (err) {
       setError(String(err))
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), finishRecording)
+      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), () => finishRecording())
     }
-  }, [audio, proctoring, refreshSession, sentiment, router])
+  }, [audio])
 
   const handleFormSubmit = async (data: InterviewFormData, isDemoMode = false, demoPhase = "") => {
     setFormData(data)
     setError("")
     setPhase("processing")
     try {
-      await proctoring.initCamera()
+      // Init camera (may fail gracefully — interview continues without)
+      const cameraOk = await proctoring.initCamera()
       await audio.initMic()
-      // Pass interviewer_persona so backend uses the chosen voice/prompt
-      const res = await startInterviewStream({
+      
+      const res = await prepareInterview({
         ...data,
         interviewer_persona: data.interviewer_persona ?? "bodhi",
         demo_mode: isDemoMode,
         demo_phase: demoPhase,
-      })
-      if (!res.ok) throw new Error(`${res.status}: ${await res.text().catch(() => res.statusText)}`)
+      } as any) // suppress TS type issue for demo props temporarily
 
-      const meta: StreamMeta = parseStreamHeaders(res)
-      if (meta.session) setSessionId(meta.session)
-      if (meta.text) setTranscript([{ speaker: "bodhi", text: meta.text, phase: isDemoMode ? demoPhase : "intro" }])
+      const sid = res.session_id
+      setSessionId(sid)
 
-      if (meta.session) {
-        proctoring.connectWebSocket(meta.session, "")
+      // Connect Proctoring WS only if camera is available
+      if (cameraOk) {
+        proctoring.connectWebSocket(sid, "")
       }
 
-      setPhase("speaking")
-      await audio.playStreamingAudio(res)
-      refreshSession()
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), finishRecording)
+      // Connect Interview Audio & State WS
+      audio.connectWebSocket(sid, {
+        onGreetingStart: (text, sessionPhase) => {
+           setTranscript([{ speaker: "bodhi", text, phase: isDemoMode ? demoPhase : sessionPhase }])
+           setInterviewPhase(isDemoMode ? demoPhase : sessionPhase)
+           refreshSession()
+        },
+        onGreetingComplete: (sessionPhase) => {
+           // Phase transitions to speaking happen during onPlaybackStart now
+        },
+        onTranscript: (text) => {
+           setTranscript((prev) => [...prev, { speaker: "user", text }])
+        },
+        onPartialReply: (chunk) => {
+           setTranscript((prev) => {
+             const newTranscript = [...prev]
+             const last = newTranscript[newTranscript.length - 1]
+             if (last && last.speaker === "bodhi") {
+               // Clone the last turn before mutating to be strictly immutable
+               newTranscript[newTranscript.length - 1] = {
+                 ...last,
+                 text: last.text + chunk
+               }
+               return newTranscript
+             } else {
+               return [...newTranscript, { speaker: "bodhi", text: chunk }]
+             }
+           })
+        },
+        onReplyComplete: (text, sessionPhase, shouldEnd) => {
+           setTranscript((prev) => {
+             const newTranscript = [...prev]
+             const last = newTranscript[newTranscript.length - 1]
+             if (last && last.speaker === "bodhi") {
+               newTranscript[newTranscript.length - 1] = {
+                 ...last,
+                 text: text,
+                 phase: sessionPhase
+               }
+               return newTranscript
+             } else {
+               return [...newTranscript, { speaker: "bodhi", text, phase: sessionPhase }]
+             }
+           })
+           setInterviewPhase(sessionPhase)
+           if (shouldEnd) {
+               setPhase("ended")
+               proctoring.endSession()
+               audio.cleanup()
+               proctoring.cleanupCamera()
+               router.push(`/report/${sid}`)
+               sentiment.reset()
+           } else {
+               refreshSession()
+           }
+        },
+        onError: (err) => {
+           setError(err)
+           setPhase("idle")
+        },
+        onPlaybackStart: () => {
+           setPhase("speaking")
+        },
+        onPlaybackComplete: () => {
+           audio.startListening(
+               () => setPhase("listening"),
+               () => setPhase("recording"),
+               finishRecording
+           )
+        }
+      })
+
     } catch (err) {
       setError(String(err))
       setPhase("idle")
@@ -266,7 +308,25 @@ export default function InterviewPage() {
   // ── Render: Setup Form ──────────────────────────────────
   if (phase === "idle") {
     return (
-      <div className="min-h-screen bg-[#F7F5F3]">
+      <div className="min-h-screen bg-[#F7F5F3] relative overflow-hidden">
+        {/* Animated Grid Background */}
+        <div className="absolute inset-0 opacity-[0.03] pointer-events-none">
+          <div
+            className="absolute inset-0"
+            style={{
+              backgroundImage: `
+                linear-gradient(to right, #37322F 1px, transparent 1px),
+                linear-gradient(to bottom, #37322F 1px, transparent 1px)
+              `,
+              backgroundSize: "60px 60px",
+            }}
+          />
+        </div>
+
+        {/* Gradient Orbs */}
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-[#E8E3DF] rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-float" />
+        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-[#DED9D5] rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-float" style={{ animationDelay: "2s" }} />
+
         <Navbar />
         <div className="mx-auto max-w-lg space-y-6 pt-28 px-4 pb-12">
           <div className="flex items-center justify-between">
@@ -300,28 +360,32 @@ export default function InterviewPage() {
   // ── Render: Initial Setup Loading ──────────────────────────────────
   if (phase === "processing" && transcript.length === 0) {
     return (
-      <div className="min-h-screen bg-[#F7F5F3] flex items-center justify-center">
-        <div className="text-center space-y-6 px-4">
-          <div className="relative">
-            <div className="h-20 w-20 mx-auto">
-              <div className="absolute inset-0 rounded-full border-4 border-[#E5E3E0] animate-pulse" />
-              <div className="absolute inset-0 rounded-full border-4 border-[#37322F] border-t-transparent animate-spin" />
-            </div>
+      <div className="min-h-screen bg-[#F7F5F3] flex items-center justify-center relative overflow-hidden">
+        <div className="absolute inset-0 opacity-[0.03] pointer-events-none">
+          <div
+            className="absolute inset-0"
+            style={{
+              backgroundImage: `
+                linear-gradient(to right, #37322F 1px, transparent 1px),
+                linear-gradient(to bottom, #37322F 1px, transparent 1px)
+              `,
+              backgroundSize: "60px 60px",
+            }}
+          />
+        </div>
+
+        <div className="text-center space-y-6 px-4 z-10">
+          <div className="flex justify-center">
+            <div className="w-12 h-12 rounded-full border-4 border-[#37322F]/10 border-t-[#37322F] animate-spin" />
           </div>
           <div className="space-y-2">
-            <h2 className="text-2xl font-semibold text-[#37322F]">
-              {demoMode ? `Preparing ${demoPhase} demo...` : "Setting up your interview..."}
+            <h2 className="text-xl font-semibold text-[#37322F]">
+              Loading expected environment...
             </h2>
-            <p className="text-sm text-[#6B6662]">
-              Initializing camera, microphone, and AI interviewer
+            <p className="text-sm text-[rgba(55,50,47,0.6)]">
+              {demoMode ? `Preparing ${demoPhase} demo` : "Initializing your session"}
             </p>
           </div>
-          {demoMode && (
-            <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 px-4 py-2 text-sm font-medium text-blue-700">
-              <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
-              Demo Mode
-            </div>
-          )}
         </div>
       </div>
     )
@@ -340,10 +404,12 @@ export default function InterviewPage() {
         proctoringActive={proctoring.proctoringActive}
         sessionFlagged={proctoring.sessionFlagged}
         cameraError={proctoring.cameraError}
+        cameraAvailable={proctoring.cameraAvailable}
         sentimentData={sentiment.sentimentData}
         violationCount={proctoring.violations.length}
         interviewerPersona={formData?.interviewer_persona ?? "bodhi"}
         onEditorContentChange={setEditorContent}
+        interviewPhase={interviewPhase}
       />
     </>
   )

@@ -17,13 +17,14 @@ export function useProctoring(
   const [sessionFlagged, setSessionFlagged] = useState(false)
   const [violations, setViolations] = useState<Violation[]>([])
   const [cameraError, setCameraError] = useState("")
+  const [cameraAvailable, setCameraAvailable] = useState(false)
 
   const cameraStreamRef = useRef<MediaStream | null>(null)
   const proctoringWsRef = useRef<WebSocket | null>(null)
   const frameIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const frameCounterRef = useRef(0)
 
-  const initCamera = useCallback(async () => {
+  const initCamera = useCallback(async (): Promise<boolean> => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 480, facingMode: "user" },
@@ -33,9 +34,13 @@ export function useProctoring(
         videoRef.current.srcObject = stream
         await videoRef.current.play()
       }
+      setCameraAvailable(true)
+      return true
     } catch (err) {
-      setCameraError("Camera not available — proctoring disabled.")
+      setCameraError("Camera not available — proctoring disabled. Voice-only mode active.")
+      setCameraAvailable(false)
       console.warn("Camera init failed:", err)
+      return false
     }
   }, [videoRef])
 
@@ -163,6 +168,7 @@ export function useProctoring(
     sessionFlagged,
     violations,
     cameraError,
+    cameraAvailable,
     initCamera,
     cleanupCamera,
     connectWebSocket,

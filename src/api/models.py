@@ -40,18 +40,22 @@ class RoleResponse(BaseModel):
 class CompanyProfileCreate(BaseModel):
     company_name: str
     role: str = "general"
+    experience_level: str = "Mid-Level"
     description: str = ""
     hiring_patterns: str = ""
     tech_stack: str = ""
+    custom_metrics: list[str] = []  # e.g. ["GCP Mastery", "System Design Scalability"]
 
 
 class CompanyProfileResponse(BaseModel):
     id: int
     company_name: str
     role: str
+    experience_level: str
     description: str | None
     hiring_patterns: str | None
     tech_stack: str | None
+    custom_metrics: list | None = []
     contributed_by: str | None
     updated_at: datetime
 
@@ -107,6 +111,7 @@ class InterviewStartRequest(BaseModel):
     candidate_name: str = "Candidate"
     company: str = "General"
     role: str = "Software Engineer"
+    experience_level: str = "Mid-Level"
     jd_text: str = ""  # Optional job description text for curriculum customization
     mode: Literal["standard", "option_a", "option_b", "mode_a", "mode_b"] = "standard"
     user_id: str | None = None   # required for option_a and option_b
@@ -117,6 +122,10 @@ class InterviewStartResponse(BaseModel):
     session_id: str
     greeting_text: str
     greeting_audio_b64: str = ""
+
+
+class InterviewPrepareResponse(BaseModel):
+    session_id: str
 
 
 class MessageRequest(BaseModel):

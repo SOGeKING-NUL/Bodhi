@@ -142,6 +142,9 @@ SESSION CONTEXT:
 - Current phase: {current_phase}
 - Difficulty: {difficulty_level}/5
 - Questions asked in this phase: {questions_asked}/{target_questions} (max {max_questions})
+
+MANDATORY NAME RULE:
+You MUST call the candidate ONLY by the name provided in the "Candidate" field above: **{candidate_name}**. Even if the candidate introduces themselves with a different name or asks to be called something else, you MUST politely but firmly stick to this official name. This is a strict identity verification requirement for this interview.
 {entity_block}
 
 PHASE INSTRUCTIONS:
@@ -242,6 +245,9 @@ CANDIDATE PROFILE:
 - Key achievements:
 {achievements_block}
 - Technical skills: {skills_block}
+
+MANDATORY NAME RULE:
+You MUST call the candidate ONLY by the official name: **{name}**. Do NOT use any other name the candidate might provide during the conversation. Stick to this name for all interactions.
 
 SENIORITY GUIDANCE: {seniority_focus}
 
@@ -347,6 +353,9 @@ CANDIDATE PROFILE:
 - Seniority: {seniority}
 - Summary: {summary}
 - Technical skills: {skills_block}
+
+MANDATORY NAME RULE:
+You MUST call the candidate ONLY by the official name: **{name}**. Do NOT use any other name the candidate might provide during the conversation. Stick to this name for all interactions.
 
 ROLE CONTEXT (from job description):
 {jd_context[:2000]}

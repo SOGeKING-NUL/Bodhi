@@ -145,8 +145,7 @@ async def _handle_frame(websocket: WebSocket, message: dict, orchestrator):
     # Save violations to database
     if result.violations:
         try:
-            from src.api.deps import get_storage
-            storage = next(get_storage())
+            storage = websocket.app.state.storage
             for v in result.violations:
                 storage.save_proctoring_violation(
                     session_id=orchestrator.session_id,

@@ -1,6 +1,7 @@
 """Redis cache layer (Tier 2) — sub-millisecond reads for session and entity data."""
 
 import json
+import logging
 import os
 
 import redis
@@ -51,8 +52,27 @@ class BodhiCache:
             return None
         return json.loads(raw)
 
+    def save_initial_state(self, session_id: str, state: dict, ttl: int = 3600) -> None:
+        key = f"initial:{session_id}"
+        try:
+            payload = json.dumps(state)
+            self.r.setex(key, ttl, payload)
+            logging.getLogger("bodhi.cache").info(f"Saved initial state | key={key} | size={len(payload)} bytes")
+        except Exception as e:
+            logging.getLogger("bodhi.cache").error(f"Failed to save initial state | key={key} | error={e}")
+
+    def get_initial_state(self, session_id: str) -> dict | None:
+        key = f"initial:{session_id}"
+        raw = self.r.get(key)
+        if raw is None:
+            logging.getLogger("bodhi.cache").warning(f"Initial state NOT found | key={key}")
+            return None
+        logging.getLogger("bodhi.cache").info(f"Retrieved initial state | key={key} | size={len(raw)} bytes")
+        return json.loads(raw)
+
     def delete_session(self, session_id: str) -> None:
         self.r.delete(f"session:{session_id}")
+        self.r.delete(f"initial:{session_id}")
 
     # ── RAG context cache ─────────────────────────────────────────
 

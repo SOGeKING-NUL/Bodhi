@@ -14,12 +14,20 @@ export function useInterviewAudio() {
   const analyserRef = useRef<AnalyserNode | null>(null)
   const workletRef = useRef<ScriptProcessorNode | null>(null)
   const samplesRef = useRef<Float32Array[]>([])
+  
+  const wsRef = useRef<WebSocket | null>(null)
+
   const silenceStartRef = useRef(0)
   const speechFramesRef = useRef(0)
   const isRecordingRef = useRef(false)
   const recordStartRef = useRef(0)
   const rafRef = useRef(0)
   const isListeningRef = useRef(false)
+
+  // Audio Playback refs
+  const audioQueueRef = useRef<HTMLAudioElement[]>([])
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null)
+  const playbackBatchRef = useRef<Uint8Array[]>([])
 
   const initMic = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -52,10 +60,22 @@ export function useInterviewAudio() {
     workletRef.current?.disconnect()
     streamRef.current?.getTracks().forEach((t) => t.stop())
     audioCtxRef.current?.close()
+    if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+    }
     audioCtxRef.current = null
     streamRef.current = null
     analyserRef.current = null
     workletRef.current = null
+    
+    audioQueueRef.current.forEach(a => URL.revokeObjectURL(a.src))
+    audioQueueRef.current = []
+    if (currentAudioRef.current) {
+        currentAudioRef.current.pause()
+        URL.revokeObjectURL(currentAudioRef.current.src)
+        currentAudioRef.current = null
+    }
   }, [])
 
   const startListening = useCallback(
@@ -67,8 +87,6 @@ export function useInterviewAudio() {
       speechFramesRef.current = 0
       onListening()
 
-      // Ensure AudioContext is active — it may have been suspended
-      // by the browser after HTML5 Audio playback in playStreamingAudio
       if (audioCtxRef.current?.state === "suspended") {
         audioCtxRef.current.resume()
       }
@@ -147,113 +165,135 @@ export function useInterviewAudio() {
     return encodeWav(merged, ctx?.sampleRate ?? 16000)
   }, [])
 
-  const playStreamingAudio = useCallback(
-    (response: Response): Promise<void> => {
-      return new Promise(async (resolve) => {
-        const reader = response.body?.getReader()
-        if (!reader) {
-          resolve()
-          return
-        }
+  const onPlaybackCompleteRef = useRef<(() => void) | null>(null)
 
-        const BATCH_SIZE = 25
-        const audioQueue: HTMLAudioElement[] = []
-        let currentAudio: HTMLAudioElement | null = null
-        let streamDone = false
-        let resolved = false
+  const flushPlaybackBatch = useCallback(() => {
+    if (playbackBatchRef.current.length === 0) return
+    const blob = new Blob(playbackBatchRef.current as BlobPart[], { type: "audio/mpeg" })
+    playbackBatchRef.current = []
 
-        const playNext = () => {
-          if (resolved) return
-          if (audioQueue.length === 0) {
-            if (streamDone) {
-              resolved = true
-              resolve()
-            }
+    const url = URL.createObjectURL(blob)
+    const audio = new Audio(url)
+    audio.preload = "auto"
+    audio.load()
+
+    const playNext = () => {
+        if (audioQueueRef.current.length === 0) {
+            onPlaybackCompleteRef.current?.()
             return
-          }
-
-          currentAudio = audioQueue.shift()!
-          currentAudio.onended = () => {
-            URL.revokeObjectURL(currentAudio!.src)
+        }
+        const next = audioQueueRef.current.shift()!
+        currentAudioRef.current = next
+        
+        next.onplay = () => {
+             // Only fire callback on the very first sub-chunk 
+        }
+        next.onended = () => {
+            URL.revokeObjectURL(next.src)
             playNext()
-          }
-          currentAudio.onerror = () => {
-            URL.revokeObjectURL(currentAudio!.src)
+        }
+        next.onerror = () => {
+            URL.revokeObjectURL(next.src)
             playNext()
-          }
-          currentAudio.play().catch(() => {
-            URL.revokeObjectURL(currentAudio!.src)
+        }
+        next.play().catch(() => {
+            URL.revokeObjectURL(next.src)
             playNext()
-          })
-        }
+        })
+    }
 
-        let batch: Uint8Array[] = []
-        let firstBatchPlayed = false
-
-        const flushBatch = () => {
-          if (batch.length === 0) return
-          const blob = new Blob(batch as BlobPart[], { type: "audio/mpeg" })
-          batch = []
-
-          const url = URL.createObjectURL(blob)
-          const audio = new Audio(url)
-          audio.preload = "auto"
-          audio.load()
-
-          if (!firstBatchPlayed) {
-            firstBatchPlayed = true
-            currentAudio = audio
-            currentAudio.onended = () => {
-              URL.revokeObjectURL(currentAudio!.src)
-              playNext()
+    if (!currentAudioRef.current || currentAudioRef.current.ended) {
+        currentAudioRef.current = audio
+        audio.onplay = () => {
+            // Wait, we need a way to reach the callback from here since connectWebSocket is what provides it.
+            // We can store it in a ref.
+            if (onPlaybackStartRef.current) {
+                onPlaybackStartRef.current()
+                // Clear it so it only fires at the start of the whole response stream
+                onPlaybackStartRef.current = null
             }
-            currentAudio.onerror = () => {
-              URL.revokeObjectURL(currentAudio!.src)
-              playNext()
-            }
-            currentAudio.play().catch(() => {
-              URL.revokeObjectURL(currentAudio!.src)
-              playNext()
-            })
-          } else {
-            audioQueue.push(audio)
-            if (!currentAudio || currentAudio.ended) {
-              playNext()
-            }
-          }
         }
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            if (value) {
-              batch.push(value as Uint8Array)
-              if (batch.length >= BATCH_SIZE) {
-                flushBatch()
-              }
-            }
-          }
-        } catch (err) {
-          console.error("Stream read error:", err)
+        audio.onended = () => {
+            URL.revokeObjectURL(audio.src)
+            playNext()
         }
-
-        streamDone = true
-        flushBatch()
-
-        if (!firstBatchPlayed) {
-          resolved = true
-          resolve()
-        } else if (audioQueue.length === 0 && currentAudio && (currentAudio as HTMLAudioElement).ended) {
-          if (!resolved) {
-            resolved = true
-            resolve()
-          }
+        audio.onerror = () => {
+            URL.revokeObjectURL(audio.src)
+            playNext()
         }
-      })
-    },
-    []
-  )
+        audio.play().catch(() => {
+            URL.revokeObjectURL(audio.src)
+            playNext()
+        })
+    } else {
+        audioQueueRef.current.push(audio)
+    }
+  }, [])
+
+  const onPlaybackStartRef = useRef<(() => void) | null>(null)
+
+  // Callbacks interface matching what page.tsx expects
+  const connectWebSocket = useCallback((
+    sessionId: string,
+    callbacks: {
+        onGreetingStart: (text: string, phase: string) => void,
+        onGreetingComplete: (phase: string) => void,
+        onTranscript: (text: string) => void,
+        onPartialReply: (chunk: string) => void,
+        onReplyComplete: (text: string, phase: string, shouldEnd: boolean) => void,
+        onError: (err: string) => void,
+        onPlaybackStart: () => void,
+        onPlaybackComplete: () => void
+    }
+  ) => {
+    onPlaybackCompleteRef.current = callbacks.onPlaybackComplete
+    onPlaybackStartRef.current = callbacks.onPlaybackStart
+    
+    let baseUrl = process.env.NEXT_PUBLIC_API_URL || window.location.origin
+    baseUrl = baseUrl.replace(/^http/, 'ws')
+    const ws = new WebSocket(`${baseUrl}/api/interviews/${sessionId}/ws`)
+    ws.binaryType = "arraybuffer"
+
+    ws.onmessage = async (e) => {
+      if (typeof e.data === "string") {
+         const msg = JSON.parse(e.data)
+         if (msg.type === "control") {
+             if (msg.event === "greeting_start") {
+                 callbacks.onGreetingStart(msg.text, msg.phase)
+             } else if (msg.event === "greeting_complete") {
+                 flushPlaybackBatch()
+                 callbacks.onGreetingComplete(msg.phase)
+             } else if (msg.event === "transcript") {
+                 callbacks.onTranscript(msg.text)
+             } else if (msg.event === "text_chunk") {
+                 callbacks.onPartialReply(msg.text)
+             } else if (msg.event === "reply_complete") {
+                 flushPlaybackBatch()
+                 callbacks.onReplyComplete(msg.text, msg.phase, msg.should_end)
+             }
+         }
+      } else {
+         // Binary MP3 partial chunk stream
+         playbackBatchRef.current.push(new Uint8Array(e.data))
+         if (playbackBatchRef.current.length >= 10) {
+             flushPlaybackBatch()
+         }
+      }
+    }
+
+    ws.onerror = (e) => {
+        callbacks.onError("WebSocket error occurred")
+    }
+    
+    wsRef.current = ws
+  }, [flushPlaybackBatch])
+
+  const sendAudioWs = useCallback((blob: Blob) => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(blob)
+          wsRef.current.send(JSON.stringify({ type: "event", event: "eos" }))
+      }
+  }, [])
 
   return {
     level,
@@ -263,6 +303,7 @@ export function useInterviewAudio() {
     startListening,
     stopListening,
     getRecordedAudio,
-    playStreamingAudio,
+    connectWebSocket,
+    sendAudioWs,
   }
 }

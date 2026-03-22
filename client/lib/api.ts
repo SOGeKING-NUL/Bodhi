@@ -1,6 +1,6 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-async function getAuthHeaders(initHeaders?: HeadersInit): Promise<Headers> {
+export async function getAuthHeaders(initHeaders?: HeadersInit): Promise<Headers> {
   const headers = new Headers(initHeaders);
   if (typeof window !== "undefined") {
     try {
@@ -59,6 +59,49 @@ export const upsertCurrentUser = (authToken?: string) =>
 export const getCurrentUserStatus = (authToken?: string) =>
   request<UserStatusResponse>("/api/users/me/status", undefined, authToken);
 
+export interface InterviewHistoryItem {
+  session_id: string;
+  target_company: string;
+  target_role: string;
+  overall_score: number | null;
+  started_at: string;
+  ended_at: string | null;
+}
+
+export interface UserProfileResponse {
+  clerk_user_id: string;
+  has_resume: boolean;
+  resume_data: CandidateProfile | null;
+  resume_file_name: string | null;
+  interview_history: InterviewHistoryItem[];
+  full_name: string | null;
+  experience_level: string | null;
+}
+
+export const getUserProfile = (authToken?: string) =>
+  request<UserProfileResponse>("/api/users/me/profile", undefined, authToken);
+
+export const downloadResumeBlob = async (authToken?: string) => {
+  const headers: Record<string, string> = {};
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+
+  const res = await fetch("/api/users/me/resume/download", { headers });
+  if (!res.ok) throw new Error("Failed to download resume");
+  
+  const blob = await res.blob();
+  
+  let filename = "resume.pdf";
+  const disposition = res.headers.get("Content-Disposition");
+  if (disposition && disposition.indexOf("filename=") !== -1) {
+    const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+    if (filenameMatch && filenameMatch.length === 2) {
+      filename = filenameMatch[1];
+    }
+  }
+
+  return { blob, filename };
+};
+
 // ── Roles ────────────────────────────────────────────────
 
 export interface Role {
@@ -94,11 +137,13 @@ export interface CompanyProfile {
   id: number;
   company_name: string;
   role: string;
+  experience_level: string;
   description: string | null;
   hiring_patterns: string | null;
   tech_stack: string | null;
   contributed_by: string | null;
   updated_at: string;
+  custom_metrics?: string[] | null;
 }
 
 export const listCompanies = () => request<CompanyProfile[]>("/api/companies");
@@ -106,6 +151,7 @@ export const listCompanies = () => request<CompanyProfile[]>("/api/companies");
 export const createCompany = (data: {
   company_name: string;
   role?: string;
+  experience_level?: string;
   description?: string;
   hiring_patterns?: string;
   tech_stack?: string;
@@ -116,9 +162,9 @@ export const createCompany = (data: {
     body: JSON.stringify(data),
   });
 
-export const deleteCompany = (name: string, role: string) =>
+export const deleteCompany = (name: string, role: string, experience_level: string) =>
   request<void>(
-    `/api/companies/${encodeURIComponent(name)}/${encodeURIComponent(role)}`,
+    `/api/companies/${encodeURIComponent(name)}/${encodeURIComponent(role)}/${encodeURIComponent(experience_level)}`,
     { method: "DELETE" }
   );
 
@@ -259,11 +305,32 @@ export interface SessionEnd {
   overall_score: number | null;
 }
 
+export interface InterviewPrepare {
+  session_id: string;
+}
+
+export const prepareInterview = (data: {
+  candidate_name?: string;
+  company?: string;
+  role?: string;
+  experience_level?: string;
+  mode?: "standard" | "option_a";
+  user_id?: string;
+  jd_text?: string;
+  interviewer_persona?: "bodhi" | "riya";
+}) =>
+  request<InterviewPrepare>("/api/interviews/prepare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
 export const startInterview = (data: {
   candidate_name?: string;
   company?: string;
   role?: string;
-  mode?: "standard" | "option_a" | "option_b";
+  experience_level?: string;
+  mode?: "standard" | "option_a";
   user_id?: string;
   jd_text?: string;
 }) =>
@@ -340,7 +407,8 @@ export const startInterviewStream = async (data: {
   candidate_name?: string;
   company?: string;
   role?: string;
-  mode?: "standard" | "option_a" | "option_b";
+  experience_level?: string;
+  mode?: "standard" | "option_a";
   user_id?: string;
   jd_text?: string;
   interviewer_persona?: "bodhi" | "riya";
@@ -445,6 +513,8 @@ export interface InterviewReport {
     total_data_points: number;
   };
   hiring_recommendation: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  custom_metric_scores?: Record<string, any>;
   session_info: {
     candidate_name: string;
     target_company: string;
