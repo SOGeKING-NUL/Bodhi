@@ -12,8 +12,10 @@ export default function Navbar() {
 
   const navLinks = [
     { href: "/interview", label: "Interview" },
+    { href: "/challenges", label: "Challenges" },
+    { href: "/leaderboard", label: "Leaderboard" },
+    { href: "/profile", label: "Profile" },
     { href: "/companies", label: "Companies" },
-    { href: "/roles", label: "Roles" },
     { href: "/resumes", label: "Resumes" },
   ]
 

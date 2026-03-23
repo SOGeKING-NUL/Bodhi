@@ -255,6 +255,107 @@ class BodhiStorage:
             except Exception:
                 pass
 
+            # ── Gamification tables ──────────────────────────────────────
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_stats (
+                        clerk_user_id   TEXT PRIMARY KEY,
+                        display_name    TEXT,
+                        total_xp        INT NOT NULL DEFAULT 0,
+                        total_sessions  INT NOT NULL DEFAULT 0,
+                        best_score_pct  REAL NOT NULL DEFAULT 0,
+                        avg_score_pct   REAL NOT NULL DEFAULT 0,
+                        current_streak  INT NOT NULL DEFAULT 0,
+                        longest_streak  INT NOT NULL DEFAULT 0,
+                        last_session_date DATE,
+                        streak_shields  INT NOT NULL DEFAULT 0,
+                        rank_tier       TEXT NOT NULL DEFAULT 'Novice',
+                        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS xp_log (
+                        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        clerk_user_id   TEXT NOT NULL,
+                        session_id      TEXT NOT NULL,
+                        xp_earned       INT NOT NULL,
+                        breakdown       JSONB NOT NULL DEFAULT '{}',
+                        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_badges (
+                        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        clerk_user_id   TEXT NOT NULL,
+                        badge_id        TEXT NOT NULL,
+                        session_id      TEXT,
+                        earned_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(clerk_user_id, badge_id)
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS weekly_challenges (
+                        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        week_start      DATE NOT NULL,
+                        week_end        DATE NOT NULL,
+                        title           TEXT NOT NULL,
+                        description     TEXT NOT NULL,
+                        challenge_type  TEXT NOT NULL,
+                        criteria        JSONB NOT NULL DEFAULT '{}',
+                        prize_description TEXT NOT NULL,
+                        recruiter_info  JSONB,
+                        max_winners     INT NOT NULL DEFAULT 3,
+                        status          TEXT NOT NULL DEFAULT 'active',
+                        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(week_start)
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS challenge_entries (
+                        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        challenge_id    UUID NOT NULL,
+                        clerk_user_id   TEXT NOT NULL,
+                        session_id      TEXT NOT NULL,
+                        qualifying_score REAL NOT NULL,
+                        rank            INT,
+                        is_winner       BOOL NOT NULL DEFAULT FALSE,
+                        submitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(challenge_id, clerk_user_id)
+                    )
+                """)
+            except Exception:
+                pass
+
+            try:
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_xp_log_user ON xp_log(clerk_user_id, created_at DESC);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_user_badges_user ON user_badges(clerk_user_id);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_challenge_entries_challenge ON challenge_entries(challenge_id, qualifying_score DESC);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_weekly_challenges_week ON weekly_challenges(week_start);")
+            except Exception:
+                pass
+
+            # Seed weekly challenges if none exist
+            try:
+                self._seed_challenges_if_empty(cur)
+            except Exception:
+                pass
+
     def migrate_embedding_dimension(self) -> None:
         """One-time migration: drop and recreate company_documents for new vector(3072) dim.
         WARNING: This drops all existing embedded document data."""

@@ -6,7 +6,6 @@ import Navbar from "@/components/Navbar"
 import { PageHeader } from "@/components/ui/page-header"
 import { InterviewSetupForm, type InterviewFormData } from "@/components/interview/InterviewSetupForm"
 import { InterviewSessionView } from "@/components/interview/InterviewSessionView"
-import { InterviewSummary } from "@/components/interview/InterviewSummary"
 import { useInterviewAudio } from "@/hooks/useInterviewAudio"
 import { useProctoring } from "@/hooks/useProctoring"
 import { useSentimentAnalysis } from "@/hooks/useSentimentAnalysis"
@@ -14,13 +13,12 @@ import {
   type SessionState,
   type SessionEnd,
   type StreamMeta,
-  type InterviewReport,
-  prepareInterview,
+  startInterviewStream,
+  sendAudioStream,
+  parseStreamHeaders,
   getSession,
   endInterview,
-  downloadReportPDF,
 } from "@/lib/api";
-import ReportPreview from "@/components/ReportPreview";
 
 type Phase = "idle" | "listening" | "recording" | "processing" | "speaking" | "ended"
 
@@ -30,19 +28,12 @@ interface Turn {
   phase?: string
 }
 
-const SILENCE_THRESHOLD = 0.015
-
 export default function InterviewPage() {
   const router = useRouter()
   const [sessionId, setSessionId] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [interviewPhase, setInterviewPhase] = useState<string>("intro");
   const [transcript, setTranscript] = useState<Turn[]>([]);
-  const [sessionInfo, setSessionInfo] = useState<SessionState | null>(null);
-  const [summary, setSummary] = useState<SessionEnd | null>(null);
-  const [report, setReport] = useState<InterviewReport | null>(null);
-  const [loadingReport, setLoadingReport] = useState(false);
-  const [downloadingPDF, setDownloadingPDF] = useState(false);
   const [error, setError] = useState("");
   const [formData, setFormData] = useState<InterviewFormData | null>(null)
   const [demoMode, setDemoMode] = useState(false)
@@ -90,13 +81,15 @@ export default function InterviewPage() {
     // Map legacy mode values to new system
     const mode = rawMode === "option_a" || rawMode === "resume" ? "option_a" : null
     const userId = params.get("user_id")
+    const company = params.get("company")
+    const role = params.get("role")
     const isDemoMode = params.get("demo") === "true"
-    const phase = params.get("phase")
+    const demoPhaseParam = params.get("phase")
     
-    if (isDemoMode && phase) {
+    if (isDemoMode && demoPhaseParam) {
       // Set demo mode state
       setDemoMode(true)
-      setDemoPhase(phase)
+      setDemoPhase(demoPhaseParam)
       
       // Auto-start demo mode
       setFormData({
@@ -120,31 +113,35 @@ export default function InterviewPage() {
           user_id: "",
           jd_text: "",
           interviewer_persona: "bodhi",
-        }, true, phase)
+        }, true, demoPhaseParam)
       }, 100)
-    } else if (mode && userId) {
-      setFormData((prev) => ({
-        ...(prev || {
-          candidate_name: "",
-          company: "",
-          role: "Software Engineer",
-          experience_level: "Mid-Level",
-          mode: "standard",
-          user_id: "",
-          jd_text: "",
-          interviewer_persona: "bodhi",
-        }),
-        mode,
-        user_id: userId,
-      }))
+    } else if (phase === "idle") {
+      const baseFormData = {
+        candidate_name: "",
+        company: company || "",
+        role: role || "Software Engineer",
+        mode: "standard" as const,
+        user_id: "",
+        jd_text: "",
+        interviewer_persona: "bodhi" as const,
+      }
+      
+      if (mode && userId) {
+        setFormData({
+          ...baseFormData,
+          mode,
+          user_id: userId,
+        })
+      } else if (company || role) {
+        setFormData(baseFormData)
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const refreshSession = useCallback(async () => {
     try {
-      const info = await getSession(sessionIdRef.current)
-      setSessionInfo(info)
+      await getSession(sessionIdRef.current)
     } catch { }
   }, [])
 
@@ -349,7 +346,11 @@ export default function InterviewPage() {
             </div>
           )}
           <div className="rounded-2xl border border-[rgba(55,50,47,0.10)] bg-white p-6 shadow-[0px_2px_8px_rgba(55,50,47,0.06)] animate-fade-in-up">
-            <InterviewSetupForm onSubmit={handleFormSubmit} loading={phase !== "idle"} />
+            <InterviewSetupForm 
+              onSubmit={handleFormSubmit} 
+              loading={phase !== "idle"}
+              initialData={formData || undefined}
+            />
           </div>
         </div>
       </div>
@@ -390,37 +391,7 @@ export default function InterviewPage() {
     )
   }
 
-  // ── Render: Active Interview - Show summary if ended, otherwise show session view
-  if (phase === "ended" && summary) {
-    return (
-      <div className="min-h-screen bg-[#F7F5F3] relative overflow-hidden">
-        {/* Animated Grid Background */}
-        <div className="absolute inset-0 opacity-[0.03] pointer-events-none">
-          <div
-            className="absolute inset-0"
-            style={{
-              backgroundImage: `
-                linear-gradient(to right, #37322F 1px, transparent 1px),
-                linear-gradient(to bottom, #37322F 1px, transparent 1px)
-              `,
-              backgroundSize: "60px 60px",
-            }}
-          />
-        </div>
-
-        {/* Gradient Orbs */}
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-[#E8E3DF] rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-float" />
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-[#DED9D5] rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-float" style={{ animationDelay: "2s" }} />
-
-        <Navbar />
-        <div className="relative pt-24 pb-8 px-4 sm:px-6 max-w-7xl mx-auto">
-          <InterviewSummary summary={summary} />
-        </div>
-      </div>
-    )
-  }
-
-  // Render: Active Interview Session (no navbar, full screen)
+  // ── Render: Active Interview - Show session view
   return (
     <>
       <canvas ref={canvasRef} className="hidden" />

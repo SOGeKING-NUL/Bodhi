@@ -9,6 +9,7 @@ import { type CandidateProfile, type CompanyProfile, uploadResume } from "@/lib/
 interface InterviewSetupFormProps {
   onSubmit: (formData: InterviewFormData) => void
   loading?: boolean
+  initialData?: Partial<InterviewFormData>
 }
 
 export interface InterviewFormData {

@@ -557,21 +557,43 @@ export const downloadReportPDF = async (sessionId: string) => {
   URL.revokeObjectURL(url);
 };
 
+// ── Gamification / XP ────────────────────────────────────
 
-// ── Demo Mode ────────────────────────────────────────────
+export interface SessionXP {
+  xp_earned: number;
+  breakdown: {
+    base?: number;
+    difficulty?: number;
+    behavioral?: number;
+    integrity?: number;
+    streak_multiplier?: number;
+  };
+  new_badges: Array<{
+    id: string;
+    name: string;
+    icon: string;
+    rarity: string;
+  }>;
+}
 
-/** Start a demo interview locked to a specific phase. */
-export const startDemoInterviewStream = async (phase: string) => {
-  const headers = new Headers();
-  if (typeof window !== "undefined") {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const token = await (window as any).Clerk?.session?.getToken();
-      if (token) headers.set("Authorization", `Bearer ${token}`);
-    } catch {}
-  }
-  return fetch(`${BASE}/api/interviews/demo/${phase}/start-stream`, {
-    method: "POST",
-    headers,
-  });
-};
+export const getSessionXP = (sessionId: string) =>
+  request<SessionXP>(`/api/gamification/sessions/${sessionId}/xp`);
+
+// ── Leaderboard ──────────────────────────────────────────
+
+export interface LeaderboardEntry {
+  rank: number;
+  clerk_user_id: string;
+  display_name: string;
+  total_xp: number;
+  weekly_xp: number;
+  total_sessions: number;
+  rank_tier: string;
+  tier_color: string;
+}
+
+export const getGlobalLeaderboard = () =>
+  request<LeaderboardEntry[]>("/api/gamification/leaderboard/global");
+
+export const getWeeklyLeaderboard = () =>
+  request<LeaderboardEntry[]>("/api/gamification/leaderboard/weekly");

@@ -28,6 +28,10 @@ from src.cache import BodhiCache
 from src.services.llm import _extract_text
 from src.storage import BodhiStorage
 
+import logging as _logging
+
+_log = _logging.getLogger("bodhi.api.interviews")
+
 router = APIRouter(prefix="/api/interviews", tags=["interviews"])
 
 
@@ -656,6 +660,7 @@ def _flush_session_sync(
     state: dict,
     storage: BodhiStorage,
     cache: BodhiCache | None,
+    clerk_user_id: str | None = None,
 ) -> tuple[str, float | None]:
     """Flush session data to NeonDB, trigger RAG contribution, clean up Redis.
     Returns (summary, overall_score)."""
@@ -739,6 +744,14 @@ def _flush_session_sync(
             summary = f"Interview complete. {total_q} questions across {len(scores)} phases."
         
         storage.end_session(session_id, overall_score=overall_score, summary=summary, report_data=report_data)
+
+        # ── Gamification ──────────────────────────────────────────────
+        if clerk_user_id and report_data:
+            try:
+                _process_gamification(clerk_user_id, session_id, report_data, storage)
+            except Exception as ge:
+                _log.warning(f"Gamification processing failed (non-critical): {ge}")
+
     except Exception:
         pass
 
@@ -758,6 +771,127 @@ def _flush_session_sync(
             pass
 
     return summary, overall_score
+
+
+def _process_gamification(
+    clerk_user_id: str,
+    session_id: str,
+    report_data: dict,
+    storage: BodhiStorage,
+) -> None:
+    """Award XP, update streak, check badges, enter challenges. Non-critical."""
+    from src.gamification import (
+        calculate_xp, check_badges, compute_new_streak,
+        get_rank_tier, check_challenge_qualification,
+    )
+    from datetime import date
+
+    # Current stats
+    stats = storage.get_user_stats(clerk_user_id)
+    current_streak = stats.get("current_streak", 0)
+    last_session_date = stats.get("last_session_date")
+    total_sessions = stats.get("total_sessions", 0) + 1
+
+    # Streak update
+    today = date.today()
+    if isinstance(last_session_date, str):
+        from datetime import datetime
+        last_session_date = datetime.strptime(last_session_date, "%Y-%m-%d").date() if last_session_date else None
+    new_streak = compute_new_streak(last_session_date, current_streak, today)
+    longest_streak = max(stats.get("longest_streak", 0), new_streak)
+
+    # Phase results for difficulty bonus
+    phase_results = []
+    try:
+        phase_results = storage.get_answer_scores.__func__  # handled below
+    except Exception:
+        pass
+    try:
+        with storage.conn.cursor(cursor_factory=__import__('psycopg2').extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT phase, difficulty_reached FROM phase_results WHERE session_id = %s",
+                (session_id,),
+            )
+            phase_results = [dict(r) for r in cur.fetchall()]
+    except Exception:
+        phase_results = []
+
+    # XP calculation
+    xp_earned, breakdown = calculate_xp(report_data, phase_results, new_streak)
+
+    # Update cumulative stats
+    old_total_xp = stats.get("total_xp", 0)
+    new_total_xp = old_total_xp + xp_earned
+    overall_score = report_data.get("overall_score_pct", 0)
+    old_avg = stats.get("avg_score_pct", 0.0)
+    new_avg = round(
+        (old_avg * (total_sessions - 1) + overall_score) / total_sessions, 1
+    )
+    new_best = max(stats.get("best_score_pct", 0.0), overall_score)
+    new_tier = get_rank_tier(new_total_xp)
+
+    # Get display name from user profile
+    display_name = None
+    try:
+        with storage.conn.cursor() as cur:
+            cur.execute(
+                "SELECT professional_summary->>'name' FROM user_profiles WHERE clerk_user_id = %s",
+                (clerk_user_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                display_name = row[0]
+    except Exception:
+        pass
+
+    # Save everything
+    storage.upsert_user_stats(
+        clerk_user_id=clerk_user_id,
+        total_xp=new_total_xp,
+        total_sessions=total_sessions,
+        best_score_pct=new_best,
+        avg_score_pct=new_avg,
+        current_streak=new_streak,
+        longest_streak=longest_streak,
+        last_session_date=today,
+        rank_tier=new_tier,
+        display_name=display_name,
+    )
+    storage.log_xp(clerk_user_id, session_id, xp_earned, breakdown)
+
+    # Badges
+    existing_ids = {b["badge_id"] for b in storage.get_user_badges(clerk_user_id)}
+    clean_count = storage.get_clean_session_count(clerk_user_id)
+    new_badge_ids = check_badges(
+        report_data=report_data,
+        total_sessions=total_sessions,
+        current_streak=new_streak,
+        existing_badge_ids=existing_ids,
+        clean_session_count=clean_count,
+    )
+    for badge_id in new_badge_ids:
+        storage.award_badge(clerk_user_id, badge_id, session_id)
+
+    # Challenge auto-entry
+    try:
+        challenge = storage.get_active_challenge()
+        if challenge:
+            criteria = challenge.get("criteria", {})
+            if isinstance(criteria, str):
+                import json
+                criteria = json.loads(criteria)
+            qualifies, q_score = check_challenge_qualification(
+                report_data, criteria, phase_results
+            )
+            if qualifies:
+                entered = storage.try_enter_challenge(
+                    challenge["id"], clerk_user_id, session_id, q_score
+                )
+                if entered:
+                    # Award challenge_accepted badge if first entry
+                    storage.award_badge(clerk_user_id, "challenge_accepted", session_id)
+    except Exception as ce:
+        _log.warning(f"Challenge auto-entry failed: {ce}")
 
 
 # ── Streaming endpoints ───────────────────────────────────────────
