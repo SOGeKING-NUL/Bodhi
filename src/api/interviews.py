@@ -1351,7 +1351,7 @@ async def send_audio_stream(
         # HuggingFace speech emotion in thread pool (~300ms)
         async def _hf_analysis():
             try:
-                from behavioral_analysis.services.speech_service import analyze_speech
+                from src.behavioral_analysis.services.speech_service import analyze_speech
                 return await loop.run_in_executor(
                     None, lambda: analyze_speech(audio_bytes, file.filename or "audio.wav")
                 )
@@ -1364,7 +1364,7 @@ async def send_audio_stream(
             if not image_bytes:
                 return {}
             try:
-                from behavioral_analysis.services.posture_service import analyze_posture
+                from src.behavioral_analysis.services.posture_service import analyze_posture
                 return await loop.run_in_executor(None, lambda: analyze_posture(image_bytes))
             except Exception as e:
                 _stream_log.warning("Posture analysis failed: %s", e)

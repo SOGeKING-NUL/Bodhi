@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from .face_detection import FaceDetector, FaceDetectionResult
 from .gaze_analysis import GazeAnalyzer, GazeAnalysisResult
 from .object_detection import ObjectDetector, ObjectDetectionResult
+from .emotion_analysis import EmotionAnalyzer, EmotionAnalysisResult
 from .violation_builder import ViolationBuilder
 from ..models.violation import (
     Violation,
@@ -57,6 +58,7 @@ class ProctoringOrchestrator:
         face_detector: FaceDetector,
         gaze_analyzer: GazeAnalyzer,
         object_detector: ObjectDetector,
+        emotion_analyzer: "EmotionAnalyzer" = None,
     ):
         self.session_id = session_id
         self.candidate_id = candidate_id
@@ -64,6 +66,7 @@ class ProctoringOrchestrator:
         self._face_detector = face_detector
         self._gaze_analyzer = gaze_analyzer
         self._object_detector = object_detector
+        self._emotion_analyzer = emotion_analyzer
 
         self._violation_builder = ViolationBuilder(
             auto_flag_threshold=settings.VIOLATION_AUTO_FLAG_COUNT
@@ -77,6 +80,10 @@ class ProctoringOrchestrator:
         self._consecutive_no_face = 0
         self._no_face_trigger = 2
 
+        # Rate limiting: max 1 frame per second
+        self._last_processed_time = 0.0
+        self._min_interval = 1.0
+
         logger.info(f"ProctoringOrchestrator initialized for session {session_id}")
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -88,6 +95,18 @@ class ProctoringOrchestrator:
         """
         start_time = time.perf_counter()
 
+        # Rate Limiting
+        if start_time - self._last_processed_time < self._min_interval:
+            return OrchestratorResult(
+                frame_id=frame_id,
+                session_id=self.session_id,
+                processing_time_ms=0.0,
+                has_violations=False,
+                session_flagged=self._violation_builder.is_session_flagged(self.session_id)
+            )
+
+        self._last_processed_time = start_time
+
         try:
             # ── 1. Decode frame ───────────────────────────────
             frame = self._decode_frame(frame_b64)
@@ -98,6 +117,10 @@ class ProctoringOrchestrator:
             face_result = self._face_detector.analyze(frame)
             gaze_result = self._gaze_analyzer.analyze(frame)
             object_result = self._object_detector.analyze(frame)
+            
+            emotion_result = EmotionAnalysisResult()
+            if self._emotion_analyzer and face_result.has_face:
+                emotion_result = self._emotion_analyzer.analyze(frame, face_result.face_bbox)
 
             # ── 3. Collect violations ─────────────────────────
             violation_types = self._collect_violations(face_result, gaze_result, object_result)
@@ -107,7 +130,7 @@ class ProctoringOrchestrator:
                 session_id=self.session_id,
                 candidate_id=self.candidate_id,
                 violation_types=violation_types,
-                metadata=self._build_metadata(face_result, gaze_result, object_result),
+                metadata=self._build_metadata(face_result, gaze_result, object_result, emotion_result),
             )
 
             violation_events = self._violation_builder.build_events_from_violations(
@@ -123,7 +146,7 @@ class ProctoringOrchestrator:
                 violations=violation_events,
                 has_violations=len(violation_events) > 0,
                 session_flagged=self._violation_builder.is_session_flagged(self.session_id),
-                analysis=self._build_analysis_debug(face_result, gaze_result, object_result),
+                analysis=self._build_analysis_debug(face_result, gaze_result, object_result, emotion_result),
                 processing_time_ms=round(processing_time, 2),
             )
 
@@ -210,6 +233,7 @@ class ProctoringOrchestrator:
         face: FaceDetectionResult,
         gaze: GazeAnalysisResult,
         objects: ObjectDetectionResult,
+        emotion: EmotionAnalysisResult,
     ) -> Dict[str, Any]:
         return {
             "face_count": face.face_count,
@@ -220,6 +244,8 @@ class ProctoringOrchestrator:
             "vertical_deviation": gaze.vertical_deviation,
             "attention_score": gaze.attention_score,
             "detected_objects": [obj.label for obj in objects.detected_objects],
+            "emotion": emotion.emotion,
+            "emotion_confidence": emotion.confidence,
         }
 
     def _build_analysis_debug(
@@ -227,6 +253,7 @@ class ProctoringOrchestrator:
         face: FaceDetectionResult,
         gaze: GazeAnalysisResult,
         objects: ObjectDetectionResult,
+        emotion: EmotionAnalysisResult,
     ) -> Dict[str, Any]:
         return {
             "face": {
@@ -235,6 +262,8 @@ class ProctoringOrchestrator:
                 "is_centered": face.is_centered,
                 "confidence": face.confidence,
                 "center_offset": face.center_offset,
+                "emotion": emotion.emotion,
+                "emotion_confidence": emotion.confidence,
             },
             "gaze": {
                 "is_looking_at_screen": gaze.is_looking_at_screen,

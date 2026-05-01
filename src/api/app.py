@@ -69,9 +69,9 @@ async def lifespan(app: FastAPI):
     # ── Initialize Proctoring CV Models ──────────────────────────────────────
     logger.info("Loading proctoring CV models...")
     try:
-        from procturing_backend.services.proctoring.face_detection import FaceDetector
-        from procturing_backend.services.proctoring.gaze_analysis import GazeAnalyzer
-        from procturing_backend.services.proctoring.object_detection import ObjectDetector
+        from src.proctoring_backend.services.proctoring.face_detection import FaceDetector
+        from src.proctoring_backend.services.proctoring.gaze_analysis import GazeAnalyzer
+        from src.proctoring_backend.services.proctoring.object_detection import ObjectDetector
 
         app.state.face_detector = FaceDetector()
         app.state.gaze_analyzer = GazeAnalyzer()

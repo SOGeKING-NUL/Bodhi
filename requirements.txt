@@ -32,6 +32,8 @@ opencv-python>=4.8.0
 # Behavioral analysis: HuggingFace models + audio features + pose
 transformers>=4.40.0
 torch>=2.2.0
+torchvision>=0.17.0
+huggingface-hub>=0.20.0
 sentencepiece>=0.2.0
 librosa>=0.10.0
 mediapipe>=0.10.0

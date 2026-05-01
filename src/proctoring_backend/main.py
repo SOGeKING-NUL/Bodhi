@@ -15,10 +15,12 @@ async def lifespan(app: FastAPI):
     from .services.proctoring.face_detection import FaceDetector
     from .services.proctoring.gaze_analysis import GazeAnalyzer
     from .services.proctoring.object_detection import ObjectDetector
+    from .services.proctoring.emotion_analysis import EmotionAnalyzer
 
     app.state.face_detector=FaceDetector()
     app.state.gaze_analyzer=GazeAnalyzer()
     app.state.object_detector=ObjectDetector()
+    app.state.emotion_analyzer=EmotionAnalyzer()
     logger.info("models ready and loaded to be used!!")
 
     yield
@@ -55,6 +57,7 @@ async def health_check():
             "face_detector": hasattr(app.state, "face_detector"),
             "gaze_analyzer": hasattr(app.state, "gaze_analyzer"),
             "object_detector": hasattr(app.state, "object_detector"),
+            "emotion_analyzer": hasattr(app.state, "emotion_analyzer"),
         },
     }
 

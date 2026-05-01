@@ -40,6 +40,12 @@ class GazeAnalyzer:
     LEFT_MOUTH = 287
     RIGHT_MOUTH = 57
 
+    # Eye/Iris landmark indices for true gaze tracking
+    RIGHT_EYE_INNER = 133
+    RIGHT_IRIS_CENTER = 468
+    LEFT_EYE_INNER = 362
+    LEFT_IRIS_CENTER = 473
+
     FACE_3D_MODEL = np.array([
         [0.0, 0.0, 0.0],
         [0.0, -330.0, -65.0],
@@ -118,20 +124,28 @@ class GazeAnalyzer:
             rotation_mat, _ = cv2.Rodrigues(rotation_vec)
             pitch, yaw, roll = self._rotation_matrix_to_euler(rotation_mat)
 
-            gaze_direction = self._classify_gaze(yaw, pitch)
+            # Iris Tracking
+            iris_horizontal_deviation = self._calculate_iris_deviation(landmarks)
+
+            # Combine head pose yaw with iris deviation
+            # Head pose yaw is typically -45 to 45 degrees. Iris deviation is around -0.5 to 0.5.
+            # We scale iris deviation to degrees to roughly match yaw.
+            combined_yaw = yaw + (iris_horizontal_deviation * 60.0)
+
+            gaze_direction = self._classify_gaze(combined_yaw, pitch)
             is_looking_at_screen = (
-                abs(yaw) <= self.YAW_THRESHOLD and
+                abs(combined_yaw) <= self.YAW_THRESHOLD and
                 abs(pitch) <= self.PITCH_THRESHOLD
             )
 
-            yaw_score = max(0.0, 1.0 - abs(yaw) / (self.YAW_THRESHOLD * 2))
+            yaw_score = max(0.0, 1.0 - abs(combined_yaw) / (self.YAW_THRESHOLD * 2))
             pitch_score = max(0.0, 1.0 - abs(pitch) / (self.PITCH_THRESHOLD * 2))
             attention_score = round((yaw_score + pitch_score) / 2, 3)
 
             return GazeAnalysisResult(
                 is_looking_at_screen=is_looking_at_screen,
                 gaze_direction=gaze_direction,
-                horizontal_deviation=round(float(yaw), 2),
+                horizontal_deviation=round(float(combined_yaw), 2),
                 vertical_deviation=round(float(pitch), 2),
                 head_pose=(round(float(pitch), 2), round(float(yaw), 2), round(float(roll), 2)),
                 attention_score=attention_score,
@@ -158,6 +172,33 @@ class GazeAnalyzer:
             roll  = 0.0
 
         return pitch, yaw, roll
+
+    def _calculate_iris_deviation(self, landmarks) -> float:
+        """
+        Calculates the horizontal deviation of the irises relative to the eyes.
+        Returns a value from roughly -0.5 (looking left) to +0.5 (looking right).
+        """
+        try:
+            # Right eye
+            r_inner_x = landmarks[self.RIGHT_EYE_INNER].x
+            r_outer_x = landmarks[self.RIGHT_EYE_OUTER].x
+            r_iris_x = landmarks[self.RIGHT_IRIS_CENTER].x
+            r_width = abs(r_outer_x - r_inner_x)
+            r_ratio = (r_iris_x - min(r_inner_x, r_outer_x)) / r_width if r_width > 0 else 0.5
+
+            # Left eye
+            l_inner_x = landmarks[self.LEFT_EYE_INNER].x
+            l_outer_x = landmarks[self.LEFT_EYE_OUTER].x
+            l_iris_x = landmarks[self.LEFT_IRIS_CENTER].x
+            l_width = abs(l_outer_x - l_inner_x)
+            l_ratio = (l_iris_x - min(l_inner_x, l_outer_x)) / l_width if l_width > 0 else 0.5
+
+            # Average ratio (0.5 means looking straight, <0.5 right, >0.5 left relative to camera)
+            avg_ratio = (r_ratio + l_ratio) / 2.0
+            deviation = (avg_ratio - 0.5) * 2.0  # Scale to -1.0 to 1.0
+            return deviation
+        except Exception:
+            return 0.0
 
     def _classify_gaze(self, yaw: float, pitch: float) -> str:
         if abs(yaw) <= self.YAW_THRESHOLD and abs(pitch) <= self.PITCH_THRESHOLD:
