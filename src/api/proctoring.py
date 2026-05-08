@@ -63,6 +63,7 @@ async def proctoring_websocket(websocket: WebSocket, session_id: str):
         face_detector=app_state.face_detector,
         gaze_analyzer=app_state.gaze_analyzer,
         object_detector=app_state.object_detector,
+        emotion_analyzer=getattr(app_state, "emotion_analyzer", None),
     )
     _active_proctoring_sessions[session_id] = orchestrator
 

@@ -221,7 +221,10 @@ export default function InterviewPage() {
              }
            })
         },
-        onReplyComplete: (text, sessionPhase, shouldEnd) => {
+        onReplyComplete: (text, sessionPhase, shouldEnd, sentimentData) => {
+           if (sentimentData) {
+             sentiment.updateFromMeta({ sentiment: sentimentData })
+           }
            setTranscript((prev) => {
              const newTranscript = [...prev]
              const last = newTranscript[newTranscript.length - 1]
@@ -436,6 +439,7 @@ export default function InterviewPage() {
         cameraAvailable={proctoring.cameraAvailable}
         sentimentData={sentiment.sentimentData}
         violationCount={proctoring.violations.length}
+        violations={proctoring.violations}
         interviewerPersona={formData?.interviewer_persona ?? "bodhi"}
         onEditorContentChange={setEditorContent}
         interviewPhase={interviewPhase}

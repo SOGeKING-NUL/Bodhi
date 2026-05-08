@@ -233,11 +233,16 @@ def generate_interview_curriculum(company: str, role: str, experience_level: str
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
         raw = _extract_text(response.content).strip()
-        if raw.startswith("```json"): raw = raw[7:]
-        if raw.startswith("```"): raw = raw[3:]
-        if raw.endswith("```"): raw = raw[:-3]
+        import re
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            raw = match.group(0)
         
-        data = json.loads(raw.strip())
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            log.error(f"JSON decode failed: {e}. Raw: {raw}")
+            data = {"technical": [], "dsa": []}
         
         result = {
             "technical": data.get("technical", [])[:2],
@@ -875,10 +880,48 @@ async def interview_websocket(
                         except Exception as e:
                             _stream_log.error(f"WS STT error: {e}")
 
+                        audio_bytes = bytes(audio_buffer)
                         audio_buffer.clear()
                         transcript = (transcript or "").strip()
                         if not transcript:
                             continue
+
+                        # ── Sentiment analysis for WS ─────────────────────────────
+                        sentiment_payload = {}
+                        try:
+                            rb = _analyze_tone(transcript, audio_bytes)
+                            sentiment_payload = rb.to_dict()
+                            
+                            from src.behavioral_analysis.services.speech_service import analyze_speech
+                            import asyncio
+                            loop = asyncio.get_running_loop()
+                            hf_result = await loop.run_in_executor(
+                                None, lambda: analyze_speech(audio_bytes, "audio.wav")
+                            )
+                            if hf_result:
+                                sentiment_payload.update({
+                                    "hf_emotion":       hf_result.get("emotion"),
+                                    "hf_confidence":    hf_result.get("emotion_confidence"),
+                                    "sentiment":        hf_result.get("sentiment"),
+                                    "pitch_variance":   hf_result.get("pitch_variance"),
+                                    "confidence_score": hf_result.get("confidence_score"),
+                                    "flags":            hf_result.get("flags", []),
+                                })
+                            
+                            storage.save_sentiment_data(
+                                session_id=session_id,
+                                emotion=sentiment_payload.get("hf_emotion") or sentiment_payload.get("emotion"),
+                                sentiment=sentiment_payload.get("sentiment"),
+                                confidence_score=sentiment_payload.get("confidence_score"),
+                                speaking_rate_wpm=sentiment_payload.get("speaking_rate_wpm"),
+                                filler_rate=sentiment_payload.get("filler_rate"),
+                                posture=None,
+                                gaze_direction=None,
+                                spine_score=None,
+                                flags=sentiment_payload.get("flags", []),
+                            )
+                        except Exception as e:
+                            _stream_log.warning(f"WS Sentiment error: {e}")
 
                         # Acknowledge transcription
                         await websocket.send_json({"type": "control", "event": "transcript", "text": transcript})
@@ -918,7 +961,8 @@ async def interview_websocket(
                             "event": "reply_complete",
                             "text": result_holder.get("reply_text"),
                             "phase": phase,
-                            "should_end": should_end
+                            "should_end": should_end,
+                            "sentiment": sentiment_payload
                         })
 
                         if should_end:

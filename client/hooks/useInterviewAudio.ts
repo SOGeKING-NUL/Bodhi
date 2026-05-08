@@ -240,7 +240,7 @@ export function useInterviewAudio() {
         onGreetingComplete: (phase: string) => void,
         onTranscript: (text: string) => void,
         onPartialReply: (chunk: string) => void,
-        onReplyComplete: (text: string, phase: string, shouldEnd: boolean) => void,
+        onReplyComplete: (text: string, phase: string, shouldEnd: boolean, sentiment?: any) => void,
         onError: (err: string) => void,
         onPlaybackStart: () => void,
         onPlaybackComplete: () => void
@@ -269,7 +269,7 @@ export function useInterviewAudio() {
                  callbacks.onPartialReply(msg.text)
              } else if (msg.event === "reply_complete") {
                  flushPlaybackBatch()
-                 callbacks.onReplyComplete(msg.text, msg.phase, msg.should_end)
+                 callbacks.onReplyComplete(msg.text, msg.phase, msg.should_end, msg.sentiment)
              }
          }
       } else {

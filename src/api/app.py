@@ -72,10 +72,12 @@ async def lifespan(app: FastAPI):
         from src.proctoring_backend.services.proctoring.face_detection import FaceDetector
         from src.proctoring_backend.services.proctoring.gaze_analysis import GazeAnalyzer
         from src.proctoring_backend.services.proctoring.object_detection import ObjectDetector
+        from src.proctoring_backend.services.proctoring.emotion_analysis import EmotionAnalyzer
 
         app.state.face_detector = FaceDetector()
         app.state.gaze_analyzer = GazeAnalyzer()
         app.state.object_detector = ObjectDetector()
+        app.state.emotion_analyzer = EmotionAnalyzer()
         logger.info("✓ Proctoring CV models loaded successfully")
     except Exception as e:
         logger.warning(f"⚠ Proctoring models failed to load: {e}")
@@ -83,6 +85,18 @@ async def lifespan(app: FastAPI):
         app.state.face_detector = None
         app.state.gaze_analyzer = None
         app.state.object_detector = None
+        app.state.emotion_analyzer = None
+
+    # ── Initialize Behavioral Models ─────────────────────────────────────────
+    logger.info("Loading behavioral analysis models...")
+    try:
+        from src.behavioral_analysis.services.speech_service import load_models as load_speech_models
+        from src.behavioral_analysis.services.posture_service import load_models as load_posture_models
+        load_speech_models()
+        load_posture_models()
+        logger.info("✓ Behavioral models loaded successfully")
+    except Exception as e:
+        logger.warning(f"⚠ Behavioral models failed to load: {e}")
 
     yield
 
@@ -141,5 +155,6 @@ async def health():
             hasattr(app.state, "face_detector") and app.state.face_detector is not None,
             hasattr(app.state, "gaze_analyzer") and app.state.gaze_analyzer is not None,
             hasattr(app.state, "object_detector") and app.state.object_detector is not None,
+            hasattr(app.state, "emotion_analyzer") and app.state.emotion_analyzer is not None,
         ]),
     }
