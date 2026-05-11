@@ -9,6 +9,6 @@ venv/
 .cursor
 bodhi.db
 node_modules/
-docs/
+# docs/
 # *.md
 *.pt

@@ -6,8 +6,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from behavioral_analysis.schemas.analysis import AnalysisResponse
-from behavioral_analysis.services import posture_service, speech_service
+from src.behavioral_analysis.schemas.analysis import AnalysisResponse
+from src.behavioral_analysis.services import posture_service, speech_service
 
 router = APIRouter(prefix="/api/test", tags=["behavioral-analysis"])
 
@@ -78,7 +78,7 @@ def health() -> dict:
     response_model=AnalysisResponse,
     summary="Run speech + posture analysis on an audio/image pair",
 )
-async def behavioral_analysis(
+async def src.behavioral_analysis.
     audio_file: UploadFile = File(..., description=".wav or .webm audio file"),
     image_file: UploadFile = File(..., description=".jpg or .png webcam frame"),
 ) -> AnalysisResponse:
@@ -109,7 +109,7 @@ async def behavioral_analysis(
         speech_data = speech_service.analyze_speech(
             audio_bytes, audio_file.filename or "audio.wav"
         )
-        from behavioral_analysis.schemas.analysis import SpeechResult
+        from src.behavioral_analysis.schemas.analysis import SpeechResult
         speech_result = SpeechResult(**speech_data)
     except Exception as exc:
         errors["speech"] = str(exc)
@@ -117,7 +117,7 @@ async def behavioral_analysis(
     # ── Posture analysis ──────────────────────────────────────────────────────
     try:
         posture_data = posture_service.analyze_posture(image_bytes)
-        from behavioral_analysis.schemas.analysis import PostureResult
+        from src.behavioral_analysis.schemas.analysis import PostureResult
         posture_result = PostureResult(**posture_data)
     except Exception as exc:
         errors["posture"] = str(exc)

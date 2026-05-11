@@ -1,10 +1,10 @@
 """Behavioral Analysis API — standalone FastAPI application.
 
 Run with:
-    uvicorn behavioral_analysis.main:app --reload --port 8001
+    uvicorn src.behavioral_analysis.main:app --reload --port 8001
 
 Or from the project root:
-    python -m uvicorn behavioral_analysis.main:app --reload --port 8001
+    python -m uvicorn src.behavioral_analysis.main:app --reload --port 8001
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from behavioral_analysis.routers.test_analysis import router as test_router
-from behavioral_analysis.services import posture_service, speech_service
+from src.behavioral_analysis.routers.test_analysis import router as test_router
+from src.behavioral_analysis.services import posture_service, speech_service
 
 load_dotenv()
 

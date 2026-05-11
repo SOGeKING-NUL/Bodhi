@@ -25,6 +25,13 @@ import {
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
 
+interface Violation {
+  violation_type: string
+  severity: string
+  message: string
+  timestamp: string
+}
+
 interface Turn {
   speaker: "user" | "bodhi"
   text: string
@@ -52,6 +59,7 @@ interface InterviewSessionViewProps {
   cameraAvailable: boolean
   sentimentData?: SentimentData | null
   violationCount?: number
+  violations?: Violation[]
   interviewerPersona?: "bodhi" | "riya"
   onEditorContentChange?: (content: string) => void
   interviewPhase?: string
@@ -68,6 +76,7 @@ export function InterviewSessionView({
   cameraAvailable,
   sentimentData,
   violationCount = 0,
+  violations = [],
   interviewerPersona = "bodhi",
   onEditorContentChange,
   interviewPhase = "intro"
@@ -228,7 +237,7 @@ export function InterviewSessionView({
 
           {/* Violations Count */}
           <div>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-[rgba(55,50,47,0.6)] font-sans">Violations</span>
               <span className={cn(
                 "text-sm font-semibold font-sans",
@@ -237,6 +246,20 @@ export function InterviewSessionView({
                 {violationCount}
               </span>
             </div>
+            {violations && violations.length > 0 && (
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {violations.slice(-5).map((v, i) => (
+                  <div key={i} className="rounded-lg bg-red-50 border border-red-100 px-3 py-2">
+                    <p className="text-[10px] font-semibold text-red-700 capitalize mb-0.5">
+                      {v.violation_type.replace(/_/g, " ")}
+                    </p>
+                    <p className="text-[10px] text-[rgba(55,50,47,0.6)]">
+                      {v.message}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

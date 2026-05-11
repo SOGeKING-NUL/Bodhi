@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # CV model configuration
     FACE_RECOGNITION_MODEL: str = "Facenet512"
     OBJECT_DETECTION_CONFIDENCE: float = 0.5
-    YOLO_MODEL_VARIANT: str = "yolov8l"  # nano for local, override to yolov8m on AWS via .env
+    YOLO_MODEL_VARIANT: str = "yolov8n"  # nano for local, override to yolov8m on AWS via .env
 
     class Config:
         env_file=".env"

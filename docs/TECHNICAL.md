@@ -147,26 +147,24 @@ answer_scores  (session_id, phase, question_num, accuracy, depth, communication,
 
 Camera-based monitoring during interviews to ensure candidate authenticity.
 
-**Implementation plan:**
+**Architecture: Optimized Cascaded CV Pipeline (Backend)**
 
-- Use `navigator.mediaDevices.getUserMedia({ video: true })` to access the webcam
-- Display a small self-view preview in the interview UI corner
-- Run face detection at regular intervals (every 2-3 seconds) using a lightweight model:
-  - Option A: TensorFlow.js `blazeface` — runs entirely in-browser, no server round-trips
-  - Option B: `face-api.js` — higher accuracy, slightly heavier
-- Track and flag suspicious behavior:
-  - Face not detected for more than N seconds
-  - Face looking away (head pose estimation) for extended periods
-  - Multiple faces detected
-- Show a visual indicator (green dot = proctor active, yellow = warning, red = violation)
-- Log proctor events to the backend as part of the session record
-- Violations can optionally pause the interview or append a warning to the LangGraph state
+To achieve high accuracy without overloading the server, we use a cascaded backend CV pipeline operating at a strict rate limit of **1 Frame Per Second (1 FPS)**.
+
+- **Face Detection**: MediaPipe Tasks `blaze_face_short_range`. Ultra-fast bounding box detection.
+- **Eye & Gaze Tracking**: MediaPipe FaceLandmarker. We use the 3D Iris landmarks to calculate precise pupil-to-eye-corner deviation ratios, offering true eye tracking combined with head pose estimation.
+- **Emotion Analysis**: Hugging Face Vision Transformer (`trpakov/vit-face-expression`). Runs *only* on the cropped face to accurately detect candidate stress, confusion, or lack of focus with minimal overhead.
+- **Object & Person Detection**: Ultralytics YOLOv8 Nano (`yolov8n`). Lightweight and blazing fast, detects multiple people, mobile phones, books, and laptops in the frame.
+
+**Data Flow**:
+1. Frontend captures frames via webcam and sends Base64 chunks over WebSocket every 2-3 seconds.
+2. Backend Orchestrator (`ProctoringOrchestrator`) applies a strict 1 FPS rate limit.
+3. The frame passes sequentially through Face → Gaze → Object → Emotion analyzers.
+4. Violations are constructed and sent back to the client via WS in real-time, displaying a warning indicator.
 
 **Key constraints:**
-
-- All detection should happen client-side to avoid latency
-- Camera permission must be requested and granted before interview starts
-- If camera access is denied, interview can still proceed but will be flagged as "unproctored"
+- Camera permission must be requested and granted before interview starts.
+- Processing must be completely non-blocking to the FastAPI event loop, utilizing thread pools.
 
 ### 2. Focus Mode
 

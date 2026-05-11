@@ -51,7 +51,7 @@ async def proctoring_websocket(websocket: WebSocket, session_id: str):
     sends frames every 2-3 seconds, and listens for violation events.
     No enrollment step required — identity comparison is disabled.
     """
-    from procturing_backend.services.proctoring.orchestrator import ProctoringOrchestrator
+    from src.proctoring_backend.services.proctoring.orchestrator import ProctoringOrchestrator
 
     await websocket.accept()
     logger.info(f"Proctoring WebSocket connected | session={session_id}")
@@ -63,6 +63,7 @@ async def proctoring_websocket(websocket: WebSocket, session_id: str):
         face_detector=app_state.face_detector,
         gaze_analyzer=app_state.gaze_analyzer,
         object_detector=app_state.object_detector,
+        emotion_analyzer=getattr(app_state, "emotion_analyzer", None),
     )
     _active_proctoring_sessions[session_id] = orchestrator
 
@@ -119,7 +120,7 @@ async def proctoring_websocket(websocket: WebSocket, session_id: str):
 
 async def _handle_frame(websocket: WebSocket, message: dict, orchestrator):
     """Handle an incoming video frame."""
-    from procturing_backend.config import settings
+    from src.proctoring_backend.config import settings
 
     frame_id = message.get("frame_id", "unknown")
     frame_b64 = message.get("frame")
@@ -178,7 +179,7 @@ async def _handle_frame(websocket: WebSocket, message: dict, orchestrator):
 
 async def _handle_client_violation(websocket: WebSocket, message: dict, orchestrator):
     """Handle violations detected client-side."""
-    from procturing_backend.services.models.violation import ViolationType
+    from src.proctoring_backend.services.models.violation import ViolationType
 
     violation_type_str = message.get("violation_type")
 
