@@ -41,5 +41,9 @@ def get_sarvam_key(conn=Depends(_get_conn)) -> str:
     return conn.app.state.sarvam_key
 
 
+def get_deepgram_key(conn=Depends(_get_conn)) -> str:
+    return conn.app.state.deepgram_key
+
+
 def get_llm(conn=Depends(_get_conn)):
     return conn.app.state.llm

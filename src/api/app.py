@@ -10,6 +10,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Suppress TF warnings
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")  # Force CPU usage
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")  # Disable oneDNN warnings
 
+import redis
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,10 +54,22 @@ async def lifespan(app: FastAPI):
 
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
     try:
+        logger.info(f"Attempting to connect to Redis at: {redis_url}")
         cache = BodhiCache(redis_url)
-        if not cache.ping():
-            cache = None
-    except Exception:
+        logger.info("✓ Redis connection successful and verified")
+    except redis.ConnectionError as e:
+        logger.error(f"✗ Redis connection failed: {e}")
+        logger.error(f"  Redis URL: {redis_url}")
+        logger.error(f"  Please ensure Redis server is running:")
+        logger.error(f"    - Windows: Start Redis service or run 'redis-server'")
+        logger.error(f"    - Check if port 6379 is accessible")
+        logger.error(f"    - Verify firewall settings")
+        cache = None
+    except Exception as e:
+        logger.error(f"✗ Redis initialization error: {type(e).__name__}: {e}")
+        logger.error(f"  Redis URL: {redis_url}")
+        import traceback
+        logger.error(traceback.format_exc())
         cache = None
     app.state.cache = cache
 
@@ -65,6 +78,8 @@ async def lifespan(app: FastAPI):
     app.state.llm = llm
     app.state.graph = build_interview_graph(llm)
     app.state.sarvam_key = os.getenv("SARVAM_API_KEY", "")
+    app.state.deepgram_key = os.getenv("DEEPGRAM_API_KEY", "")
+    app.state.tts_sample_rate = int(os.getenv("SARVAM_TTS_SAMPLE_RATE", "22050"))
 
     # ── Initialize Proctoring CV Models ──────────────────────────────────────
     logger.info("Loading proctoring CV models...")

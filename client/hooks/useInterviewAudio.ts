@@ -1,309 +1,279 @@
 import { useCallback, useRef, useState } from "react"
-import { encodeWav } from "@/lib/wav"
+import { useSeamlessAudio } from "./useSeamlessAudio"
 
+// Client-side VAD is used ONLY for barge-in detection. End-of-turn detection
+// is handled server-side by Deepgram's endpointing — the client streams raw
+// PCM-16 continuously and never decides when an utterance ends.
 const SILENCE_THRESHOLD = 0.015
-const SILENCE_DURATION_MS = 1500
-const SPEECH_CONFIRM_FRAMES = 5
-const MIN_RECORD_MS = 500
+const BARGE_CONFIRM_FRAMES = 3 // consecutive speech frames before we barge in
+const TARGET_SAMPLE_RATE = 16000 // Deepgram input rate
+
+// Hysteresis for the "you're speaking" UI indicator — separate from the
+// barge-in detector so a few quiet frames between words don't flicker it off.
+const SPEAKING_INDICATOR_ON_FRAMES = 2
+const SPEAKING_INDICATOR_OFF_FRAMES = 8
+
+/** Downsample a Float32 buffer from `inRate` to 16 kHz (linear interpolation). */
+function downsampleTo16k(buffer: Float32Array, inRate: number): Float32Array {
+  if (inRate === TARGET_SAMPLE_RATE) return buffer
+  const ratio = inRate / TARGET_SAMPLE_RATE
+  const outLength = Math.floor(buffer.length / ratio)
+  const out = new Float32Array(outLength)
+  for (let i = 0; i < outLength; i++) {
+    const srcPos = i * ratio
+    const i0 = Math.floor(srcPos)
+    const i1 = Math.min(i0 + 1, buffer.length - 1)
+    const frac = srcPos - i0
+    out[i] = buffer[i0] * (1 - frac) + buffer[i1] * frac
+  }
+  return out
+}
+
+/** Convert Float32 [-1,1] samples to little-endian PCM-16 bytes. */
+function floatToPcm16(float32: Float32Array): ArrayBuffer {
+  const out = new ArrayBuffer(float32.length * 2)
+  const view = new DataView(out)
+  for (let i = 0; i < float32.length; i++) {
+    let s = Math.max(-1, Math.min(1, float32[i]))
+    s = s < 0 ? s * 0x8000 : s * 0x7fff
+    view.setInt16(i * 2, s, true)
+  }
+  return out
+}
 
 export function useInterviewAudio() {
   const [level, setLevel] = useState(0)
-  
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false)
+
   const audioCtxRef = useRef<AudioContext | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
-  const workletRef = useRef<ScriptProcessorNode | null>(null)
-  const samplesRef = useRef<Float32Array[]>([])
-  
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+
   const wsRef = useRef<WebSocket | null>(null)
+  const streamingRef = useRef(false) // forward mic audio to backend when true
+  const bargeFramesRef = useRef(0)
+  const speakingOnFramesRef = useRef(0)
+  const speakingOffFramesRef = useRef(0)
+  const isUserSpeakingRef = useRef(false)
 
-  const silenceStartRef = useRef(0)
-  const speechFramesRef = useRef(0)
-  const isRecordingRef = useRef(false)
-  const recordStartRef = useRef(0)
-  const rafRef = useRef(0)
-  const isListeningRef = useRef(false)
+  const setSpeakingIndicator = useCallback((value: boolean) => {
+    if (isUserSpeakingRef.current !== value) {
+      isUserSpeakingRef.current = value
+      setIsUserSpeaking(value)
+    }
+  }, [])
 
-  // Audio Playback refs
-  const audioQueueRef = useRef<HTMLAudioElement[]>([])
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null)
-  const playbackBatchRef = useRef<Uint8Array[]>([])
+  // Callback refs for seamless audio
+  const onPlaybackStartRef = useRef<(() => void) | null>(null)
+  const onPlaybackCompleteRef = useRef<(() => void) | null>(null)
+
+  // Seamless audio player using Web Audio API (raw PCM-16)
+  const seamlessAudio = useSeamlessAudio(
+    () => onPlaybackStartRef.current?.(),
+    () => onPlaybackCompleteRef.current?.()
+  )
 
   const initMic = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
+      audio: { echoCancellation: true, noiseSuppression: true, sampleRate: TARGET_SAMPLE_RATE },
     })
-    const ctx = new AudioContext({ sampleRate: 16000 })
+    const ctx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE })
     const source = ctx.createMediaStreamSource(stream)
-    const analyser = ctx.createAnalyser()
-    analyser.fftSize = 512
-    source.connect(analyser)
-
     const processor = ctx.createScriptProcessor(4096, 1, 1)
     source.connect(processor)
     processor.connect(ctx.destination)
 
     processor.onaudioprocess = (e) => {
-      if (!isRecordingRef.current) return
-      samplesRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)))
+      const input = e.inputBuffer.getChannelData(0)
+
+      // RMS level (UI meter + barge-in detection)
+      let sum = 0
+      for (let i = 0; i < input.length; i++) sum += input[i] * input[i]
+      const rms = Math.sqrt(sum / input.length)
+      setLevel(rms)
+
+      if (!streamingRef.current) return
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+      const speaking = rms > SILENCE_THRESHOLD
+
+      // While Bodhi is speaking, watch for barge-in and DON'T forward the
+      // mic to STT (avoids transcribing Bodhi's own voice). On confirmed
+      // speech, interrupt playback and resume forwarding.
+      if (seamlessAudio.isPlaying()) {
+        if (speaking) {
+          bargeFramesRef.current++
+          if (bargeFramesRef.current >= BARGE_CONFIRM_FRAMES) {
+            bargeFramesRef.current = 0
+            try { ws.send(JSON.stringify({ type: "interrupt" })) } catch {}
+            seamlessAudio.stop()
+            try { ws.send(JSON.stringify({ type: "speech.start" })) } catch {}
+          }
+        } else {
+          bargeFramesRef.current = 0
+        }
+        speakingOnFramesRef.current = 0
+        speakingOffFramesRef.current = 0
+        setSpeakingIndicator(false)
+        return
+      }
+      bargeFramesRef.current = 0
+
+      // "You're speaking" UI indicator — debounced so it doesn't flicker
+      // between words while still feeling immediate.
+      if (speaking) {
+        speakingOnFramesRef.current++
+        speakingOffFramesRef.current = 0
+        if (speakingOnFramesRef.current >= SPEAKING_INDICATOR_ON_FRAMES) {
+          setSpeakingIndicator(true)
+        }
+      } else {
+        speakingOffFramesRef.current++
+        speakingOnFramesRef.current = 0
+        if (speakingOffFramesRef.current >= SPEAKING_INDICATOR_OFF_FRAMES) {
+          setSpeakingIndicator(false)
+        }
+      }
+
+      // Forward continuous PCM-16 (16 kHz mono) to the backend → Deepgram.
+      const pcm16 = downsampleTo16k(input, ctx.sampleRate)
+      try {
+        ws.send(floatToPcm16(pcm16))
+      } catch {}
     }
 
     audioCtxRef.current = ctx
     streamRef.current = stream
-    analyserRef.current = analyser
-    workletRef.current = processor
-  }, [])
+    processorRef.current = processor
+    sourceRef.current = source
+  }, [seamlessAudio, setSpeakingIndicator])
 
   const cleanup = useCallback(() => {
-    cancelAnimationFrame(rafRef.current)
-    isListeningRef.current = false
-    workletRef.current?.disconnect()
+    streamingRef.current = false
+    setSpeakingIndicator(false)
+    if (processorRef.current) {
+      processorRef.current.onaudioprocess = null
+      processorRef.current.disconnect()
+    }
+    sourceRef.current?.disconnect()
     streamRef.current?.getTracks().forEach((t) => t.stop())
     audioCtxRef.current?.close()
     if (wsRef.current) {
-        wsRef.current.close()
-        wsRef.current = null
+      wsRef.current.close()
+      wsRef.current = null
     }
     audioCtxRef.current = null
     streamRef.current = null
-    analyserRef.current = null
-    workletRef.current = null
-    
-    audioQueueRef.current.forEach(a => URL.revokeObjectURL(a.src))
-    audioQueueRef.current = []
-    if (currentAudioRef.current) {
-        currentAudioRef.current.pause()
-        URL.revokeObjectURL(currentAudioRef.current.src)
-        currentAudioRef.current = null
-    }
-  }, [])
+    processorRef.current = null
+    sourceRef.current = null
 
+    seamlessAudio.stop()
+  }, [seamlessAudio, setSpeakingIndicator])
+
+  // Begin forwarding mic audio to the backend (server-side endpointing takes
+  // over from here). The onRecording/onFinish callbacks are retained for API
+  // compatibility but are no longer driven client-side.
   const startListening = useCallback(
-    (onListening: () => void, onRecording: () => void, onFinish: () => void) => {
-      isListeningRef.current = true
-      isRecordingRef.current = false
-      samplesRef.current = []
-      silenceStartRef.current = 0
-      speechFramesRef.current = 0
-      onListening()
-
+    (onListening: () => void, _onRecording?: () => void, _onFinish?: () => void) => {
+      streamingRef.current = true
+      bargeFramesRef.current = 0
       if (audioCtxRef.current?.state === "suspended") {
         audioCtxRef.current.resume()
       }
-
-      const analyser = analyserRef.current
-      if (!analyser) return
-      const buf = new Float32Array(analyser.fftSize)
-
-      const tick = () => {
-        if (!isListeningRef.current) return
-        
-        analyser.getFloatTimeDomainData(buf)
-        let sum = 0
-        for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
-        const rms = Math.sqrt(sum / buf.length)
-        setLevel(rms)
-
-        const now = Date.now()
-        const isSpeech = rms > SILENCE_THRESHOLD
-
-        if (!isRecordingRef.current) {
-          if (isSpeech) {
-            speechFramesRef.current++
-            if (speechFramesRef.current >= SPEECH_CONFIRM_FRAMES) {
-              isRecordingRef.current = true
-              recordStartRef.current = now
-              samplesRef.current = []
-              onRecording()
-            }
-          } else {
-            speechFramesRef.current = 0
-          }
-        } else {
-          if (!isSpeech) {
-            if (silenceStartRef.current === 0) silenceStartRef.current = now
-            else if (
-              now - silenceStartRef.current >= SILENCE_DURATION_MS &&
-              now - recordStartRef.current >= MIN_RECORD_MS
-            ) {
-              isRecordingRef.current = false
-              isListeningRef.current = false
-              onFinish()
-              return
-            }
-          } else {
-            silenceStartRef.current = 0
-          }
-        }
-        rafRef.current = requestAnimationFrame(tick)
-      }
-      rafRef.current = requestAnimationFrame(tick)
+      onListening()
     },
     []
   )
 
   const stopListening = useCallback(() => {
-    isListeningRef.current = false
-    isRecordingRef.current = false
-    cancelAnimationFrame(rafRef.current)
-  }, [])
+    streamingRef.current = false
+    setSpeakingIndicator(false)
+  }, [setSpeakingIndicator])
 
-  const getRecordedAudio = useCallback((): Blob | null => {
-    const chunks = samplesRef.current
-    if (chunks.length === 0) return null
-
-    const totalLen = chunks.reduce((a, c) => a + c.length, 0)
-    const merged = new Float32Array(totalLen)
-    let offset = 0
-    for (const c of chunks) {
-      merged.set(c, offset)
-      offset += c.length
-    }
-    samplesRef.current = []
-
-    const ctx = audioCtxRef.current
-    return encodeWav(merged, ctx?.sampleRate ?? 16000)
-  }, [])
-
-  const onPlaybackCompleteRef = useRef<(() => void) | null>(null)
-
-  const flushPlaybackBatch = useCallback(() => {
-    if (playbackBatchRef.current.length === 0) return
-    const blob = new Blob(playbackBatchRef.current as BlobPart[], { type: "audio/mpeg" })
-    playbackBatchRef.current = []
-
-    const url = URL.createObjectURL(blob)
-    const audio = new Audio(url)
-    audio.preload = "auto"
-    audio.load()
-
-    const playNext = () => {
-        if (audioQueueRef.current.length === 0) {
-            onPlaybackCompleteRef.current?.()
-            return
-        }
-        const next = audioQueueRef.current.shift()!
-        currentAudioRef.current = next
-        
-        next.onplay = () => {
-             // Only fire callback on the very first sub-chunk 
-        }
-        next.onended = () => {
-            URL.revokeObjectURL(next.src)
-            playNext()
-        }
-        next.onerror = () => {
-            URL.revokeObjectURL(next.src)
-            playNext()
-        }
-        next.play().catch(() => {
-            URL.revokeObjectURL(next.src)
-            playNext()
-        })
-    }
-
-    if (!currentAudioRef.current || currentAudioRef.current.ended) {
-        currentAudioRef.current = audio
-        audio.onplay = () => {
-            // Wait, we need a way to reach the callback from here since connectWebSocket is what provides it.
-            // We can store it in a ref.
-            if (onPlaybackStartRef.current) {
-                onPlaybackStartRef.current()
-                // Clear it so it only fires at the start of the whole response stream
-                onPlaybackStartRef.current = null
-            }
-        }
-        audio.onended = () => {
-            URL.revokeObjectURL(audio.src)
-            playNext()
-        }
-        audio.onerror = () => {
-            URL.revokeObjectURL(audio.src)
-            playNext()
-        }
-        audio.play().catch(() => {
-            URL.revokeObjectURL(audio.src)
-            playNext()
-        })
-    } else {
-        audioQueueRef.current.push(audio)
-    }
-  }, [])
-
-  const onPlaybackStartRef = useRef<(() => void) | null>(null)
-
-  // Callbacks interface matching what page.tsx expects
   const connectWebSocket = useCallback((
     sessionId: string,
     callbacks: {
-        onGreetingStart: (text: string, phase: string) => void,
-        onGreetingComplete: (phase: string) => void,
-        onTranscript: (text: string) => void,
-        onPartialReply: (chunk: string) => void,
-        onReplyComplete: (text: string, phase: string, shouldEnd: boolean, sentiment?: any) => void,
-        onError: (err: string) => void,
-        onPlaybackStart: () => void,
-        onPlaybackComplete: () => void
+      onGreetingStart: (text: string, phase: string) => void,
+      onGreetingComplete: (phase: string) => void,
+      onTranscript: (text: string) => void,
+      onInterimTranscript?: (text: string) => void,
+      onPartialReply: (chunk: string) => void,
+      onReplyComplete: (text: string, phase: string, shouldEnd: boolean, sentiment?: any) => void,
+      onError: (err: string) => void,
+      onPlaybackStart: () => void,
+      onPlaybackComplete: () => void
     }
   ) => {
     onPlaybackCompleteRef.current = callbacks.onPlaybackComplete
     onPlaybackStartRef.current = callbacks.onPlaybackStart
-    
+
     let baseUrl = process.env.NEXT_PUBLIC_API_URL || window.location.origin
     baseUrl = baseUrl.replace(/^http/, 'ws')
     const ws = new WebSocket(`${baseUrl}/api/interviews/${sessionId}/ws`)
     ws.binaryType = "arraybuffer"
 
+    ws.onopen = () => {
+      // Stream the mic continuously for the whole session; the client VAD
+      // above only gates forwarding during playback for barge-in.
+      streamingRef.current = true
+    }
+
     ws.onmessage = async (e) => {
       if (typeof e.data === "string") {
-         const msg = JSON.parse(e.data)
-         if (msg.type === "control") {
-             if (msg.event === "greeting_start") {
-                 callbacks.onGreetingStart(msg.text, msg.phase)
-             } else if (msg.event === "greeting_complete") {
-                 flushPlaybackBatch()
-                 callbacks.onGreetingComplete(msg.phase)
-             } else if (msg.event === "transcript") {
-                 callbacks.onTranscript(msg.text)
-             } else if (msg.event === "text_chunk") {
-                 callbacks.onPartialReply(msg.text)
-             } else if (msg.event === "reply_complete") {
-                 flushPlaybackBatch()
-                 callbacks.onReplyComplete(msg.text, msg.phase, msg.should_end, msg.sentiment)
-             }
-         }
+        const msg = JSON.parse(e.data)
+        if (msg.type !== "control") return
+        switch (msg.event) {
+          case "session_config":
+            seamlessAudio.setSampleRate(msg.sample_rate)
+            break
+          case "greeting_start":
+            callbacks.onGreetingStart(msg.text, msg.phase)
+            break
+          case "greeting_complete":
+            await seamlessAudio.flush()
+            callbacks.onGreetingComplete(msg.phase)
+            break
+          case "transcript":
+            callbacks.onTranscript(msg.text)
+            break
+          case "interim_transcript":
+            callbacks.onInterimTranscript?.(msg.text)
+            break
+          case "text_chunk":
+            callbacks.onPartialReply(msg.text)
+            break
+          case "reply_complete":
+            await seamlessAudio.flush()
+            callbacks.onReplyComplete(msg.text, msg.phase, msg.should_end, msg.sentiment)
+            break
+          // interrupted / pong: no-op (additive)
+          default:
+            break
+        }
       } else {
-         // Binary MP3 partial chunk stream
-         playbackBatchRef.current.push(new Uint8Array(e.data))
-         if (playbackBatchRef.current.length >= 10) {
-             flushPlaybackBatch()
-         }
+        // Binary raw PCM-16 chunk → enqueue to seamless player
+        const chunk = new Uint8Array(e.data)
+        await seamlessAudio.enqueueChunk(chunk)
       }
     }
 
-    ws.onerror = (e) => {
-        callbacks.onError("WebSocket error occurred")
+    ws.onerror = () => {
+      callbacks.onError("WebSocket error occurred")
     }
-    
+
     wsRef.current = ws
-  }, [flushPlaybackBatch])
-
-  const sendAudioWs = useCallback((blob: Blob) => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(blob)
-          wsRef.current.send(JSON.stringify({ type: "event", event: "eos" }))
-      }
-  }, [])
+  }, [seamlessAudio])
 
   return {
     level,
     setLevel,
+    isUserSpeaking,
     initMic,
     cleanup,
     startListening,
     stopListening,
-    getRecordedAudio,
     connectWebSocket,
-    sendAudioWs,
   }
 }

@@ -9,6 +9,9 @@ langchain-google-genai>=2.0.0
 langgraph>=0.2.0
 python-dotenv>=1.0.0
 
+# Live voice pipeline: Deepgram streaming STT + Sarvam linear16 TTS WebSockets
+websockets>=12.0
+
 # Audio processing (needed by STT service for audio chunking)
 soundfile>=0.12.1
 numpy>=1.24.0

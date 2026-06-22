@@ -21,12 +21,40 @@ class BodhiCache:
 
     def __init__(self, redis_url: str | None = None):
         url = redis_url or _default_redis_url()
-        self.r = redis.from_url(url, decode_responses=True)
+        try:
+            self.r = redis.from_url(
+                url, 
+                decode_responses=True,
+                socket_connect_timeout=10,  # 10 second connection timeout
+                socket_timeout=10,  # 10 second operation timeout
+                retry_on_timeout=True,
+                retry_on_error=[redis.exceptions.ConnectionError, redis.exceptions.TimeoutError],
+                health_check_interval=30,  # Check connection health every 30s
+                max_connections=50,  # Connection pool size
+            )
+            logging.getLogger("bodhi.cache").info(f"Redis client initialized with URL: {url}")
+            # Force an immediate connection test
+            self.r.ping()
+            logging.getLogger("bodhi.cache").info(f"✓ Redis connection verified successfully")
+        except redis.ConnectionError as e:
+            logging.getLogger("bodhi.cache").error(f"✗ Redis connection failed: {e}")
+            logging.getLogger("bodhi.cache").error(f"  URL: {url}")
+            logging.getLogger("bodhi.cache").error(f"  Ensure Redis server is running and accessible")
+            raise
+        except Exception as e:
+            logging.getLogger("bodhi.cache").error(f"✗ Failed to initialize Redis client: {type(e).__name__}: {e}")
+            raise
 
     def ping(self) -> bool:
         try:
-            return self.r.ping()
-        except redis.ConnectionError:
+            result = self.r.ping()
+            logging.getLogger("bodhi.cache").info(f"Redis ping successful: {result}")
+            return result
+        except redis.ConnectionError as e:
+            logging.getLogger("bodhi.cache").error(f"Redis connection error during ping: {e}")
+            return False
+        except Exception as e:
+            logging.getLogger("bodhi.cache").error(f"Unexpected error during Redis ping: {type(e).__name__}: {e}")
             return False
 
     # ── Entity cache ──────────────────────────────────────────────

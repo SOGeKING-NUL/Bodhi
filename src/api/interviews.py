@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 
 from langchain_core.messages import HumanMessage
 
-from src.api.deps import get_cache, get_graph, get_llm, get_sarvam_key, get_storage, require_auth
+from src.api.deps import get_cache, get_deepgram_key, get_graph, get_llm, get_sarvam_key, get_storage, require_auth
 from src.api.models import (
     InterviewStartRequest,
     InterviewStartResponse,
@@ -787,8 +787,34 @@ async def interview_websocket(
     storage: BodhiStorage = Depends(get_storage),
     cache: BodhiCache | None = Depends(get_cache),
     sarvam_key: str = Depends(get_sarvam_key),
+    deepgram_key: str = Depends(get_deepgram_key),
 ):
+    """Live interview voice pipeline.
+
+    Mechanics (ported from the standalone streaming engine):
+      - Client streams raw PCM-16 (16 kHz mono) continuously.
+      - Deepgram Nova-3 transcribes with server-side endpointing; its
+        utterance_end event triggers the LLM → TTS turn (no client-side
+        silence detection, no batch-WAV upload, no blocking STT round-trip).
+      - The LangGraph "brain" is unchanged: tokens come from
+        graph.astream_events() and are spoken via a persistent linear16
+        Sarvam TTS WebSocket, streamed to the client as raw PCM.
+      - Barge-in: an `interrupt` control cancels the in-flight turn and
+        drops pending TTS audio.
+
+    NOTE: per-turn audio sentiment/behavioral analysis is deferred here and
+    wired back later; `reply_complete.sentiment` is `{}` for now.
+    """
+    from src.services.tts import SarvamTTSStream, split_sentences
+    from src.services.stt_deepgram import DeepgramStreamingSTT
+
     await websocket.accept()
+
+    tts_sample_rate = getattr(websocket.app.state, "tts_sample_rate", 22050)
+
+    session_tts: "SarvamTTSStream | None" = None
+    session_stt: "DeepgramStreamingSTT | None" = None
+    pipeline_task: asyncio.Task | None = None
 
     try:
         initial_state = None
@@ -796,7 +822,6 @@ async def interview_websocket(
             initial_state = cache.get_initial_state(session_id)
             # Retry once after a short delay (race condition safety)
             if not initial_state:
-                import asyncio
                 await asyncio.sleep(0.5)
                 initial_state = cache.get_initial_state(session_id)
 
@@ -805,11 +830,9 @@ async def interview_websocket(
             await websocket.close(code=1008, reason="Session not prepared")
             return
 
-        user_id = initial_state.get("clerk_user_id", "anonymous")
         graph_config = {"configurable": {"thread_id": session_id}}
-        
+
         # Load messages back (we didn't store HumanMessage in Redis)
-        from langchain_core.messages import HumanMessage
         initial_state["messages"] = [HumanMessage(content="Hello, I'm ready for my interview.")]
 
         # First graph invocation (Greeting)
@@ -825,157 +848,165 @@ async def interview_websocket(
                 "scores": result.get("phase_scores", {}),
             })
 
-        # Send TTS greeting if available
-        if sarvam_key and greeting:
-            from src.services.tts import text_to_speech_stream
-            
-            # Signal greeting start so frontend can show text
-            await websocket.send_json({
-                "type": "control",
-                "event": "greeting_start",
-                "text": greeting,
-                "phase": result.get("current_phase", "intro")
-            })
+        # Tell the client the audio sample rate so it can build PCM buffers.
+        await websocket.send_json({
+            "type": "control",
+            "event": "session_config",
+            "sample_rate": tts_sample_rate,
+        })
 
+        # ── Per-session services ─────────────────────────────────────────
+        persona = initial_state.get("interviewer_persona", "bodhi")
+        voice = "shreya" if persona == "riya" else "shubh"
+        session_tts = SarvamTTSStream(api_key=sarvam_key, voice=voice, sample_rate=tts_sample_rate)
+        session_stt = DeepgramStreamingSTT(api_key=deepgram_key)
+
+        # ── Greeting (streamed via persistent linear16 TTS) ──────────────
+        await websocket.send_json({
+            "type": "control",
+            "event": "greeting_start",
+            "text": greeting,
+            "phase": result.get("current_phase", "intro"),
+        })
+        if sarvam_key and greeting:
+            async def _greeting_sentences():
+                for s in split_sentences(greeting):
+                    yield s
             try:
-                async for chunk in text_to_speech_stream(
-                    greeting, api_key=sarvam_key, target_language_code="hi-IN", speaker="shubh"
-                ):
+                await session_tts.connect()
+                async for chunk in session_tts.stream_tts(_greeting_sentences()):
                     await websocket.send_bytes(chunk)
             except Exception as e:
                 _stream_log.error(f"WS TTS greeting error: {e}")
-
-        # Signal greeting complete to trigger final flush
         await websocket.send_json({
             "type": "control",
             "event": "greeting_complete",
-            "phase": result.get("current_phase", "intro")
+            "phase": result.get("current_phase", "intro"),
         })
 
-        # Process user audio bytes
-        audio_buffer = bytearray()
-        
-        while True:
+        # ── One user turn: transcript → graph tokens → TTS audio ─────────
+        async def run_turn(transcript: str) -> None:
+            async def on_token(token: str):
+                try:
+                    await websocket.send_json({"type": "control", "event": "text_chunk", "text": token})
+                except Exception:
+                    pass
+
+            result_holder: dict = {}
             try:
-                message = await websocket.receive()
-                if "bytes" in message:
-                    audio_buffer.extend(message["bytes"])
-                elif "text" in message:
-                    data = _json.loads(message["text"])
-                    if data.get("type") == "event" and data.get("event") == "eos":
-                        if len(audio_buffer) == 0:
-                            continue
-                        
-                        # Process audio buffer
-                        # Assume the frontend sends WAV format directly or we pass byte wrapper
-                        
-                        transcript = ""
-                        try:
-                            transcript = transcribe_audio(
-                                bytes(audio_buffer),
-                                api_key=sarvam_key,
-                                model="saaras:v3",
-                                language_code="en-IN"
-                            )
-                        except Exception as e:
-                            _stream_log.error(f"WS STT error: {e}")
-
-                        audio_bytes = bytes(audio_buffer)
-                        audio_buffer.clear()
-                        transcript = (transcript or "").strip()
-                        if not transcript:
-                            continue
-
-                        # ── Sentiment analysis for WS ─────────────────────────────
-                        sentiment_payload = {}
-                        try:
-                            rb = _analyze_tone(transcript, audio_bytes)
-                            sentiment_payload = rb.to_dict()
-                            
-                            from src.behavioral_analysis.services.speech_service import analyze_speech
-                            import asyncio
-                            loop = asyncio.get_running_loop()
-                            hf_result = await loop.run_in_executor(
-                                None, lambda: analyze_speech(audio_bytes, "audio.wav")
-                            )
-                            if hf_result:
-                                sentiment_payload.update({
-                                    "hf_emotion":       hf_result.get("emotion"),
-                                    "hf_confidence":    hf_result.get("emotion_confidence"),
-                                    "sentiment":        hf_result.get("sentiment"),
-                                    "pitch_variance":   hf_result.get("pitch_variance"),
-                                    "confidence_score": hf_result.get("confidence_score"),
-                                    "flags":            hf_result.get("flags", []),
-                                })
-                            
-                            storage.save_sentiment_data(
-                                session_id=session_id,
-                                emotion=sentiment_payload.get("hf_emotion") or sentiment_payload.get("emotion"),
-                                sentiment=sentiment_payload.get("sentiment"),
-                                confidence_score=sentiment_payload.get("confidence_score"),
-                                speaking_rate_wpm=sentiment_payload.get("speaking_rate_wpm"),
-                                filler_rate=sentiment_payload.get("filler_rate"),
-                                posture=None,
-                                gaze_direction=None,
-                                spine_score=None,
-                                flags=sentiment_payload.get("flags", []),
-                            )
-                        except Exception as e:
-                            _stream_log.warning(f"WS Sentiment error: {e}")
-
-                        # Acknowledge transcription
-                        await websocket.send_json({"type": "control", "event": "transcript", "text": transcript})
-
-                        # Feed the graph
-                        result_holder = {}
-                        
-                        async def on_token(token: str):
-                            try:
-                                await websocket.send_json({"type": "control", "event": "text_chunk", "text": token})
-                            except Exception:
-                                pass
-
-                        async for chunk in _pipeline_audio_generator(
-                            graph, graph_config, transcript, sarvam_key, result_holder, speaker="shubh", token_callback=on_token
-                        ):
-                             if chunk:
-                                 await websocket.send_bytes(chunk)
-                        
-                        phase = result_holder.get("phase", "unknown")
-                        should_end = result_holder.get("should_end", False)
-
-                        if cache:
-                            try:
-                                state_dict = graph.get_state(graph_config).values
-                                cache.save_session_state(session_id, {
-                                    "phase": phase,
-                                    "difficulty": state_dict.get("difficulty_level", 3),
-                                    "scores": state_dict.get("phase_scores", {}),
-                                })
-                            except Exception:
-                                pass
-
-                        # Send completion meta for this turn
-                        await websocket.send_json({
-                            "type": "control",
-                            "event": "reply_complete",
-                            "text": result_holder.get("reply_text"),
-                            "phase": phase,
-                            "should_end": should_end,
-                            "sentiment": sentiment_payload
-                        })
-
-                        if should_end:
-                            state_dict = graph.get_state(graph_config).values
-                            _flush_session_async(session_id, state_dict, graph_config)
-                            break
+                async for chunk in _session_pipeline_audio(
+                    graph, graph_config, transcript, session_tts, result_holder, token_callback=on_token
+                ):
+                    if chunk:
+                        await websocket.send_bytes(chunk)
             except asyncio.CancelledError:
+                # Barge-in: turn was interrupted — drop it silently.
+                raise
+
+            phase = result_holder.get("phase", "unknown")
+            should_end = result_holder.get("should_end", False)
+
+            if cache:
+                try:
+                    state_dict = graph.get_state(graph_config).values
+                    cache.save_session_state(session_id, {
+                        "phase": phase,
+                        "difficulty": state_dict.get("difficulty_level", 3),
+                        "scores": state_dict.get("phase_scores", {}),
+                    })
+                except Exception:
+                    pass
+
+            await websocket.send_json({
+                "type": "control",
+                "event": "reply_complete",
+                "text": result_holder.get("reply_text"),
+                "phase": phase,
+                "should_end": should_end,
+                "sentiment": {},  # per-turn audio analysis deferred
+            })
+
+            if should_end:
+                try:
+                    state_dict = graph.get_state(graph_config).values
+                    _flush_session_async(session_id, state_dict, graph_config)
+                finally:
+                    await websocket.close()
+
+        async def _cancel_pipeline() -> None:
+            nonlocal pipeline_task
+            if pipeline_task and not pipeline_task.done():
+                pipeline_task.cancel()
+                try:
+                    await pipeline_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            pipeline_task = None
+
+        # ── Deepgram callbacks ───────────────────────────────────────────
+        async def on_interim(text: str) -> None:
+            # Surface partials as the existing transcript event (live display).
+            await websocket.send_json({"type": "control", "event": "interim_transcript", "text": text})
+
+        async def on_utterance_end(transcript: str) -> None:
+            nonlocal pipeline_task
+            transcript = (transcript or "").strip()
+            if not transcript:
+                return
+            # Safety: cancel any still-running prior turn.
+            await _cancel_pipeline()
+            await websocket.send_json({"type": "control", "event": "transcript", "text": transcript})
+            pipeline_task = asyncio.create_task(run_turn(transcript))
+
+        await session_stt.connect(
+            on_interim=on_interim,
+            on_utterance_end=on_utterance_end,
+        )
+
+        # ── Main receive loop ────────────────────────────────────────────
+        while True:
+            message = await websocket.receive()
+
+            if message["type"] == "websocket.disconnect":
                 break
+
+            if "bytes" in message:
+                # Continuous PCM-16 frames → forward straight to Deepgram.
+                await session_stt.send_audio(message["bytes"])
+
+            elif "text" in message:
+                data = _json.loads(message["text"])
+                msg_type = data.get("type", "")
+
+                if msg_type == "speech.start":
+                    session_stt.reset_transcript()
+
+                elif msg_type == "interrupt":
+                    # Barge-in: stop the current turn and drop pending audio.
+                    await _cancel_pipeline()
+                    await session_tts.close()
+                    await session_tts.connect()
+                    session_stt.reset_transcript()
+                    await websocket.send_json({"type": "control", "event": "interrupted"})
+
+                elif msg_type == "ping":
+                    await websocket.send_json({"type": "control", "event": "pong"})
+
     except WebSocketDisconnect:
         _stream_log.info(f"WebSocket disconnected for {session_id}")
     except Exception as e:
         _stream_log.error(f"WebSocket unexpected error: {e}", exc_info=True)
     finally:
+        if pipeline_task and not pipeline_task.done():
+            pipeline_task.cancel()
+            try:
+                await pipeline_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if session_stt is not None:
+            await session_stt.close()
+        if session_tts is not None:
+            await session_tts.close()
         try:
             await websocket.close()
         except Exception:
@@ -1054,6 +1085,10 @@ async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, sp
     # Async generator that extracts LLM tokens from astream_events
     async def _llm_tokens():
         nonlocal phase, should_end
+        # See _session_pipeline_audio for why this buffers per-invocation:
+        # the interviewer node re-runs after every tool call within one turn,
+        # and only the final (no-tool-call) invocation is the real answer.
+        pending_text: list[str] = []
         try:
             async for event in graph.astream_events(
                 {"messages": [HumanMessage(content=user_input)]},
@@ -1061,22 +1096,29 @@ async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, sp
                 version="v2",
             ):
                 kind = event.get("event", "")
+                node_name = event.get("metadata", {}).get("langgraph_node", "")
 
                 if kind == "on_chat_model_stream":
-                    node_name = event.get("metadata", {}).get("langgraph_node", "")
                     if node_name in ("interviewer", ""):
                         chunk = event.get("data", {}).get("chunk")
                         if chunk and hasattr(chunk, "content"):
                             token_text = _extract_text(chunk.content)
                             if token_text:
+                                pending_text.append(token_text)
+
+                elif kind == "on_chat_model_end":
+                    if node_name in ("interviewer", "") and pending_text:
+                        output = event.get("data", {}).get("output")
+                        tool_calls = getattr(output, "tool_calls", None) if output is not None else None
+                        if not tool_calls:
+                            for token_text in pending_text:
                                 collected_text.append(token_text)
                                 if token_callback:
                                     await token_callback(token_text)
                                 yield token_text
-                                
-                                current_text = "".join(collected_text)
-                                if "[END_INTERVIEW]" in current_text:
-                                    should_end = True
+                            if "[END_INTERVIEW]" in "".join(collected_text):
+                                should_end = True
+                        pending_text = []
 
                 elif kind == "on_tool_end":
                     output = event.get("data", {}).get("output", "")
@@ -1137,6 +1179,97 @@ async def _pipeline_audio_generator(graph, graph_config, user_input, sarvam_key,
             yield audio_chunk
         elif meta is not None:
             result_holder.update(meta)
+
+
+async def _session_pipeline_audio(graph, graph_config, user_input, tts, result_holder: dict, token_callback=None):
+    """LangGraph tokens → sentences → raw PCM-16 audio over a *persistent* TTS WS.
+
+    Same token-extraction logic as `_llm_tts_pipeline` (interviewer-node tokens,
+    [END_INTERVIEW] handling, on_tool_end TRANSITION/END parsing) but the audio
+    sink is the per-session `SarvamTTSStream` (linear16), and only audio bytes are
+    yielded. Final metadata (reply_text/phase/should_end) is stored in
+    `result_holder` for the caller.
+    """
+    collected_text: list[str] = []
+    phase = "unknown"
+    should_end = False
+
+    async def _llm_tokens():
+        nonlocal phase, should_end
+        # The interviewer node runs more than once per turn whenever the model
+        # calls a tool (score/transition/etc) — that invocation's narrated text
+        # is internal commentary tied to the tool call, not the final answer.
+        # Buffer per-invocation and only speak it once on_chat_model_end shows
+        # no tool_calls, otherwise the user hears two overlapping replies.
+        pending_text: list[str] = []
+        try:
+            async for event in graph.astream_events(
+                {"messages": [HumanMessage(content=user_input)]},
+                config=graph_config,
+                version="v2",
+            ):
+                kind = event.get("event", "")
+                node_name = event.get("metadata", {}).get("langgraph_node", "")
+                if kind == "on_chat_model_stream":
+                    if node_name in ("interviewer", ""):
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk and hasattr(chunk, "content"):
+                            token_text = _extract_text(chunk.content)
+                            if token_text:
+                                pending_text.append(token_text)
+                elif kind == "on_chat_model_end":
+                    if node_name in ("interviewer", "") and pending_text:
+                        output = event.get("data", {}).get("output")
+                        tool_calls = getattr(output, "tool_calls", None) if output is not None else None
+                        if not tool_calls:
+                            for token_text in pending_text:
+                                collected_text.append(token_text)
+                                if token_callback:
+                                    await token_callback(token_text)
+                                yield token_text
+                            if "[END_INTERVIEW]" in "".join(collected_text):
+                                should_end = True
+                        pending_text = []
+                elif kind == "on_tool_end":
+                    output = event.get("data", {}).get("output", "")
+                    if hasattr(output, "content"):
+                        output = output.content
+                    output = str(output)
+                    if output.startswith("TRANSITION:"):
+                        phase = output.split(":", 1)[1]
+                        _stream_log.info("[WS-PIPE] Phase transition → %s", phase)
+                    elif output.startswith("END:"):
+                        should_end = True
+                        _stream_log.info("[WS-PIPE] Interview end triggered")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _stream_log.error("[WS-PIPE] astream_events error: %s", e, exc_info=True)
+
+    sentence_stream = _sentence_accumulator(_llm_tokens())
+    try:
+        async for audio_chunk in tts.stream_tts(sentence_stream):
+            yield audio_chunk
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _stream_log.error("[WS-PIPE] TTS pipeline error: %s", exc, exc_info=True)
+
+    # Reconcile phase/should_end from committed graph state.
+    try:
+        state = graph.get_state(graph_config)
+        if state and state.values:
+            phase = state.values.get("current_phase", phase)
+            should_end = state.values.get("should_end", should_end)
+    except Exception:
+        pass
+
+    reply_text = "".join(collected_text).strip()
+    if "[END_INTERVIEW]" in reply_text:
+        should_end = True
+        reply_text = reply_text.replace("[END_INTERVIEW]", "").strip()
+
+    result_holder.update({"reply_text": reply_text, "phase": phase, "should_end": should_end})
 
 
 def _stream_headers(**kwargs: str) -> dict[str, str]:

@@ -1,12 +1,18 @@
 """Bulbul V3 Text-to-Speech via Sarvam AI."""
 
+import asyncio
 import base64
 import io
+import json
+import logging
+import os
 import re
-from typing import AsyncIterator
+from typing import AsyncGenerator, AsyncIterator
+from urllib.parse import urlencode
 
 import sounddevice as sd
 import soundfile as sf
+import websockets
 from sarvamai import SarvamAI
 
 
@@ -319,4 +325,226 @@ async def tts_stream_sentences(
                 log.error("[TTS-PIPE] All %d attempts failed", max_retries, exc_info=True)
                 raise
             await asyncio.sleep(1.0)
+
+
+# ── Persistent linear16 streaming TTS (live interview WebSocket) ──────────
+#
+# Used by the live interview WebSocket. Unlike the SDK-based MP3 helpers above
+# (kept for the REST endpoints), this maintains ONE persistent WebSocket per
+# session and streams raw PCM-16 (linear16) audio, which the browser plays
+# directly via the Web Audio API with no MP3 decode step — eliminating the
+# partial-chunk decode jitter the MP3 path suffered from.
+
+_tts_log = logging.getLogger("bodhi.tts.linear16")
+
+# Standard WAV header is 44 bytes; some encoders use extended headers.
+_WAV_HEADER_SIZE = 44
+
+
+def _strip_wav_header(wav_bytes: bytes) -> bytes:
+    """Strip a WAV/RIFF header to extract raw PCM samples (robust to extended headers)."""
+    data_marker = wav_bytes.find(b"data")
+    if data_marker >= 0 and data_marker + 8 <= len(wav_bytes):
+        return wav_bytes[data_marker + 8:]
+    if len(wav_bytes) > _WAV_HEADER_SIZE:
+        return wav_bytes[_WAV_HEADER_SIZE:]
+    return wav_bytes
+
+
+class SarvamTTSStream:
+    """Stream text → raw PCM-16 speech via a persistent Sarvam Bulbul WebSocket.
+
+    Lifecycle (per interview session):
+        tts = SarvamTTSStream(api_key=...)
+        await tts.connect()
+        async for pcm in tts.stream_tts(sentence_aiter):
+            await websocket.send_bytes(pcm)
+        ...
+        await tts.close()
+
+    The connection is reused across turns. On barge-in, close() + connect()
+    drops any pending audio cleanly.
+    """
+
+    WS_BASE = "wss://api.sarvam.ai/text-to-speech/ws"
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        voice: str | None = None,
+        language: str | None = None,
+        model: str | None = None,
+        sample_rate: int | None = None,
+    ) -> None:
+        self.api_key = api_key
+        self.voice = voice or os.getenv("SARVAM_TTS_VOICE", "shubh")
+        self.language = language or os.getenv("SARVAM_TTS_LANGUAGE", "en-IN")
+        self.model = model or os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
+        self.sample_rate = (
+            sample_rate
+            if sample_rate is not None
+            else int(os.getenv("SARVAM_TTS_SAMPLE_RATE", "22050"))
+        )
+        self.ws: "websockets.ClientConnection | None" = None
+        self.lock = asyncio.Lock()
+
+    def _is_connected(self) -> bool:
+        if self.ws is None:
+            return False
+        if hasattr(self.ws, "state"):
+            return self.ws.state.name == "OPEN"
+        return not getattr(self.ws, "closed", True)
+
+    def _build_url(self) -> str:
+        params = urlencode({"model": self.model, "send_completion_event": "true"})
+        return f"{self.WS_BASE}?{params}"
+
+    async def connect(self) -> None:
+        """Establish a persistent WebSocket connection to Sarvam and configure it."""
+        if not self.api_key:
+            raise RuntimeError("SARVAM_API_KEY is not configured")
+        if self._is_connected():
+            return
+
+        async with self.lock:
+            if self._is_connected():
+                return
+
+            headers = {"api-subscription-key": self.api_key}
+            self.ws = await websockets.connect(
+                self._build_url(),
+                additional_headers=headers,
+                ping_interval=30,
+                ping_timeout=10,
+            )
+
+            # Configuration must be the first message.
+            config = {
+                "type": "config",
+                "data": {
+                    "target_language_code": self.language,
+                    "speaker": self.voice,
+                    "output_audio_codec": "linear16",
+                },
+            }
+            await self.ws.send(json.dumps(config))
+            _tts_log.info(
+                "TTS WS connected  voice=%s  model=%s  rate=%d",
+                self.voice, self.model, self.sample_rate,
+            )
+
+    async def close(self) -> None:
+        """Cleanly close the persistent WebSocket."""
+        async with self.lock:
+            if self.ws is not None:
+                try:
+                    if hasattr(self.ws, "state"):
+                        if self.ws.state.name != "CLOSED":
+                            await self.ws.close()
+                    elif not getattr(self.ws, "closed", True):
+                        await self.ws.close()
+                except Exception:
+                    pass
+                self.ws = None
+                _tts_log.info("TTS WS closed")
+
+    async def stream_tts(
+        self, text_chunks: AsyncIterator[str]
+    ) -> AsyncGenerator[bytes, None]:
+        """Feed sentences from *text_chunks* into the persistent TTS WebSocket and
+        yield raw PCM-16 audio (no WAV header) as it arrives."""
+        await self.connect()
+        ws = self.ws
+        if not ws:
+            raise RuntimeError("TTS WebSocket is not connected.")
+
+        text_done = asyncio.Event()
+        # Sarvam emits one "final"/"completion" signal PER flush, not once for
+        # the whole connection — so we must wait for a matching signal for
+        # every flush we sent before treating the turn as finished, otherwise
+        # we'd stop after the first sentence and drop the rest.
+        flush_count = 0
+        finals_received = 0
+
+        async def _send_text() -> None:
+            nonlocal flush_count
+            try:
+                async for chunk in text_chunks:
+                    chunk = chunk.strip()
+                    if not chunk:
+                        continue
+                    await ws.send(json.dumps({"type": "text", "data": {"text": chunk}}))
+                    await ws.send(json.dumps({"type": "flush"}))
+                    flush_count += 1
+                    _tts_log.debug("TTS text sent: %.60s", chunk)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                _tts_log.error("TTS send error: %s", exc)
+            finally:
+                text_done.set()
+
+        send_task = asyncio.create_task(_send_text())
+
+        try:
+            while True:
+                if text_done.is_set() and finals_received >= flush_count:
+                    break
+                try:
+                    message = await asyncio.wait_for(ws.recv(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    if text_done.is_set():
+                        try:
+                            message = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            _tts_log.warning("TTS timed out after text done")
+                            break
+                    else:
+                        continue
+
+                if isinstance(message, bytes):
+                    yield message
+                    continue
+
+                data = json.loads(message)
+                msg_type = data.get("type", "")
+
+                if msg_type == "audio":
+                    audio_data = data.get("data", {})
+                    if isinstance(audio_data, dict):
+                        b64_audio = audio_data.get("audio", "")
+                    elif isinstance(audio_data, str):
+                        b64_audio = audio_data
+                    else:
+                        b64_audio = ""
+                    if b64_audio:
+                        pcm_bytes = base64.b64decode(b64_audio)
+                        if pcm_bytes:
+                            yield pcm_bytes
+                elif msg_type == "event":
+                    if data.get("data", {}).get("event_type", "") == "final":
+                        finals_received += 1
+                        _tts_log.debug("TTS segment complete (final event %d/%d)", finals_received, flush_count)
+                elif msg_type == "completion":
+                    finals_received += 1
+                    _tts_log.debug("TTS segment complete (completion %d/%d)", finals_received, flush_count)
+                elif msg_type == "error":
+                    err = data.get("data", {}).get("message", str(data))
+                    _tts_log.error("TTS error: %s", err)
+                    break
+
+        except websockets.exceptions.ConnectionClosed as exc:
+            _tts_log.warning("TTS WS closed: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _tts_log.error("TTS connection error: %s", exc)
+            raise
+        finally:
+            send_task.cancel()
+            try:
+                await send_task
+            except asyncio.CancelledError:
+                pass
 

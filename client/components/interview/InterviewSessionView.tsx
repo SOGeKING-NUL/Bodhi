@@ -63,6 +63,8 @@ interface InterviewSessionViewProps {
   interviewerPersona?: "bodhi" | "riya"
   onEditorContentChange?: (content: string) => void
   interviewPhase?: string
+  isUserSpeaking?: boolean
+  interimTranscript?: string
 }
 
 export function InterviewSessionView({
@@ -79,7 +81,9 @@ export function InterviewSessionView({
   violations = [],
   interviewerPersona = "bodhi",
   onEditorContentChange,
-  interviewPhase = "intro"
+  interviewPhase = "intro",
+  isUserSpeaking = false,
+  interimTranscript = ""
 }: InterviewSessionViewProps) {
   const [isMicOn, setIsMicOn] = useState(true)
   const [editorContent, setEditorContent] = useState("")
@@ -96,8 +100,10 @@ export function InterviewSessionView({
   }
 
   const currentTranscript = transcript[transcript.length - 1]
+  const liveCaption = interimTranscript || currentTranscript?.text
 
   const getPhaseText = () => {
+    if (phase === "listening" && isUserSpeaking) return "You're Speaking"
     switch (phase) {
       case "listening": return "Listening..."
       case "recording": return "Recording"
@@ -391,7 +397,10 @@ export function InterviewSessionView({
           <div className="flex-1 flex flex-col relative">
             {cameraAvailable ? (
               /* Full-size Video Feed */
-              <div className="absolute inset-0">
+              <div className={cn(
+                "absolute inset-0 transition-shadow",
+                isUserSpeaking && "ring-4 ring-inset ring-green-400/70"
+              )}>
                 <video
                   ref={videoRef}
                   autoPlay
@@ -400,7 +409,7 @@ export function InterviewSessionView({
                   className="w-full h-full object-cover bg-[#F7F5F3]"
                   style={{ transform: "scaleX(-1)" }}
                 />
-                
+
                 {/* Proctoring Indicator Overlay */}
                 {proctoringActive && (
                   <div className="absolute top-4 right-4 bg-green-500/90 backdrop-blur-sm rounded-full px-3 py-1.5 flex items-center gap-1.5 shadow-lg">
@@ -409,11 +418,11 @@ export function InterviewSessionView({
                   </div>
                 )}
 
-                {/* Recording Indicator */}
-                {phase === "recording" && (
-                  <div className="absolute top-4 left-4 bg-red-500/90 backdrop-blur-sm rounded-full px-3 py-1.5 flex items-center gap-1.5 shadow-lg">
-                    <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                    <span className="text-xs font-medium text-white font-sans">Recording</span>
+                {/* Speaking Indicator */}
+                {isUserSpeaking && (
+                  <div className="absolute top-4 left-4 bg-green-500/90 backdrop-blur-sm rounded-full px-3 py-1.5 flex items-center gap-1.5 shadow-lg">
+                    <Mic className="w-3.5 h-3.5 text-white animate-pulse" />
+                    <span className="text-xs font-medium text-white font-sans">Speaking</span>
                   </div>
                 )}
 
@@ -429,9 +438,15 @@ export function InterviewSessionView({
               </div>
             ) : (
               /* Voice-Only Fallback */
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-[#F7F5F3] to-[#EDEBE9]">
+              <div className={cn(
+                "absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-[#F7F5F3] to-[#EDEBE9] transition-shadow",
+                isUserSpeaking && "ring-4 ring-inset ring-green-400/70"
+              )}>
                 {/* Camera Off Icon */}
-                <div className="w-24 h-24 rounded-full bg-[rgba(55,50,47,0.08)] flex items-center justify-center mb-4">
+                <div className={cn(
+                  "w-24 h-24 rounded-full bg-[rgba(55,50,47,0.08)] flex items-center justify-center mb-4 transition-colors",
+                  isUserSpeaking && "bg-green-100"
+                )}>
                   <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#37322F" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-40">
                     <path d="M16.5 12a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Z" />
                     <path d="M2 2l20 20" />
@@ -444,11 +459,11 @@ export function InterviewSessionView({
                   Turn on your camera for the full proctored experience
                 </p>
 
-                {/* Recording Indicator (voice-only) */}
-                {phase === "recording" && (
-                  <div className="mt-4 bg-[rgba(55,50,47,0.08)] rounded-full px-3 py-1.5 flex items-center gap-1.5">
-                    <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                    <span className="text-xs font-medium text-[#37322F] font-sans">Recording</span>
+                {/* Speaking Indicator (voice-only) */}
+                {isUserSpeaking && (
+                  <div className="mt-4 bg-green-100 rounded-full px-3 py-1.5 flex items-center gap-1.5">
+                    <Mic className="w-3.5 h-3.5 text-green-700 animate-pulse" />
+                    <span className="text-xs font-medium text-green-700 font-sans">Speaking</span>
                   </div>
                 )}
 
@@ -480,7 +495,7 @@ export function InterviewSessionView({
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-white font-sans">
-                  {currentTranscript?.text || "Waiting for audio..."}
+                  {liveCaption || "Waiting for audio..."}
                 </p>
               </div>
             </div>
