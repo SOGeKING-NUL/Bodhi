@@ -35,6 +35,34 @@ def _get_jwks_client() -> jwt.PyJWKClient:
 
 _CLERK_CONFIGURED = bool(os.getenv("CLERK_FRONTEND_API_URL", "").strip())
 
+# The anonymous-auth bypass is OFF by default and must be explicitly enabled for
+# local development. This prevents a missing/forgotten CLERK_FRONTEND_API_URL in
+# production from silently disabling authentication for the entire API.
+_ALLOW_ANONYMOUS = os.getenv("BODHI_ALLOW_ANONYMOUS_AUTH", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+def assert_auth_configured() -> None:
+    """Fail fast at startup if auth is neither configured nor explicitly bypassed.
+
+    Call this from the app's startup/lifespan. Without this guard, a deployment
+    that forgets CLERK_FRONTEND_API_URL would fall through to anonymous access.
+    """
+    if not _CLERK_CONFIGURED and not _ALLOW_ANONYMOUS:
+        raise RuntimeError(
+            "Authentication is not configured. Set CLERK_FRONTEND_API_URL for "
+            "production, or set BODHI_ALLOW_ANONYMOUS_AUTH=true to explicitly "
+            "allow unauthenticated access in local development."
+        )
+    if _ALLOW_ANONYMOUS:
+        logger.warning(
+            "BODHI_ALLOW_ANONYMOUS_AUTH is enabled — all requests run as "
+            "'anonymous'. This must NEVER be set in production."
+        )
+
 
 async def verify_clerk_token(
     request: Request = None,
@@ -91,9 +119,9 @@ def require_auth(
     """
     user_id = claims.get("sub", "")
     if not user_id:
-        if not _CLERK_CONFIGURED:
-            # Dev mode — allow unauthenticated access
-            logger.debug("Auth bypassed (Clerk not configured) — using 'anonymous'")
+        if not _CLERK_CONFIGURED and _ALLOW_ANONYMOUS:
+            # Local dev only — explicitly opted in via BODHI_ALLOW_ANONYMOUS_AUTH.
+            logger.debug("Auth bypassed (anonymous mode) — using 'anonymous'")
             return "anonymous"
         raise HTTPException(status_code=401, detail="Authentication required")
     return user_id
@@ -104,3 +132,25 @@ def get_current_user_id(
 ) -> str | None:
     """Optional auth — returns user_id if authenticated, None otherwise."""
     return claims.get("sub") or None
+
+
+async def authenticate_websocket(websocket: WebSocket) -> str | None:
+    """Authenticate a WebSocket handshake before accept().
+
+    Returns the authenticated user_id, or None if authentication fails.
+    The caller is responsible for closing the socket when None is returned.
+    Mirrors the anonymous-bypass policy of require_auth().
+    """
+    try:
+        claims = await verify_clerk_token(websocket=websocket)
+    except HTTPException:
+        # Expired/invalid token — treat as unauthenticated.
+        return None
+
+    user_id = claims.get("sub", "")
+    if user_id:
+        return user_id
+
+    if not _CLERK_CONFIGURED and _ALLOW_ANONYMOUS:
+        return "anonymous"
+    return None

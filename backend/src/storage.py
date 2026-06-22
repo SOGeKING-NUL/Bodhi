@@ -2,10 +2,12 @@
 
 import json
 import os
+import threading
 from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 
 def _default_database_url() -> str:
@@ -126,30 +128,53 @@ class BodhiStorage:
             raise ValueError(
                 "DATABASE_URL not set. Add your NeonDB connection string to .env"
             )
-        self.conn = self._connect()
-
-    def _connect(self):
-        conn = psycopg2.connect(
-            self._url,
+        # A psycopg2 connection is NOT thread-safe, so we keep a pool and hand
+        # each thread its own connection (cached in thread-local storage). This
+        # lets concurrent requests (FastAPI threadpool / run_in_executor) hit the
+        # DB without corrupting each other's cursor state. DB_POOL_MAX must be
+        # >= the server's worker-thread count to avoid pool exhaustion.
+        max_conn = int(os.getenv("DB_POOL_MAX", "20"))
+        self._pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1,
+            maxconn=max_conn,
+            dsn=self._url,
             keepalives=1,
             keepalives_idle=30,
             keepalives_interval=10,
             keepalives_count=5,
         )
+        self._local = threading.local()
+
+    def _new_conn(self):
+        conn = self._pool.getconn()
         conn.autocommit = True
         return conn
 
+    @property
+    def conn(self):
+        """Return this thread's connection, borrowing one from the pool lazily."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._new_conn()
+            self._local.conn = conn
+        return conn
+
     def _ensure_conn(self):
-        """Reconnect if the connection was dropped by the server."""
+        """Validate this thread's connection; replace it if the server dropped it."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            self._local.conn = self._new_conn()
+            return
         try:
-            with self.conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute("SELECT 1")
         except Exception:
+            # Discard the broken connection and borrow a fresh one.
             try:
-                self.conn.close()
+                self._pool.putconn(conn, close=True)
             except Exception:
                 pass
-            self.conn = self._connect()
+            self._local.conn = self._new_conn()
 
     def init_tables(self) -> None:
         """Create tables if they don't exist."""
@@ -277,7 +302,11 @@ class BodhiStorage:
             """)
 
     def close(self) -> None:
-        self.conn.close()
+        """Close all pooled connections (call on app shutdown)."""
+        try:
+            self._pool.closeall()
+        except Exception:
+            pass
 
     # ── Sessions ──────────────────────────────────────────────────────────────
 

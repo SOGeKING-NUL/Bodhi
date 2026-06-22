@@ -7,6 +7,8 @@ from typing import Optional, Tuple
 import urllib.request
 import os
 
+from ...config import settings
+
 _MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
 _MODEL_PATH = os.path.join(os.path.dirname(__file__), "blaze_face_short_range.tflite")
 
@@ -23,12 +25,13 @@ class FaceDetectionResult:
 
 class FaceDetector:
 
-    CENTER_TOLERANCE_X = 0.25
-    CENTER_TOLERANCE_Y = 0.25
-
     def __init__(self):
         logger.info("Initializing FaceDetector (MediaPipe Tasks)...")
         self._ensure_model()
+
+        self.center_tolerance_x = settings.FACE_CENTER_TOLERANCE
+        self.center_tolerance_y = settings.FACE_CENTER_TOLERANCE
+        self._multi_face_min_conf = settings.MULTI_FACE_MIN_CONFIDENCE
 
         BaseOptions = mp.tasks.BaseOptions
         FaceDetector = mp.tasks.vision.FaceDetector
@@ -38,7 +41,7 @@ class FaceDetector:
         options = FaceDetectorOptions(
             base_options=BaseOptions(model_asset_path=_MODEL_PATH),
             running_mode=VisionRunningMode.IMAGE,
-            min_detection_confidence=0.6,
+            min_detection_confidence=settings.FACE_MIN_DETECTION_CONFIDENCE,
         )
         self._detector = FaceDetector.create_from_options(options)
         logger.info("FaceDetector ready.")
@@ -63,9 +66,18 @@ class FaceDetector:
                     has_face=False, face_count=0, is_centered=False, confidence=0.0
                 )
 
-            face_count = len(detections)
+            # Count only confidently-detected faces for the multiple-faces signal
+            # so reflections / posters / low-confidence ghosts don't false-flag.
+            face_count = sum(
+                1 for d in detections
+                if d.categories[0].score >= self._multi_face_min_conf
+            )
             primary = max(detections, key=lambda d: d.categories[0].score)
             confidence = primary.categories[0].score
+            if face_count == 0:
+                # A face is present but below the multi-face confidence floor;
+                # still treat it as one face for the rest of the pipeline.
+                face_count = 1
 
             bbox = primary.bounding_box
             x_norm = bbox.origin_x / frame_w
@@ -79,8 +91,8 @@ class FaceDetector:
             offset_y = face_center_y - 0.5
 
             is_centered = (
-                abs(offset_x) <= self.CENTER_TOLERANCE_X and
-                abs(offset_y) <= self.CENTER_TOLERANCE_Y
+                abs(offset_x) <= self.center_tolerance_x and
+                abs(offset_y) <= self.center_tolerance_y
             )
 
             return FaceDetectionResult(

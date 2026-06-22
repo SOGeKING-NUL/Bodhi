@@ -15,6 +15,14 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
 from src.api.deps import get_cache, get_deepgram_key, get_graph, get_llm, get_sarvam_key, get_storage, require_auth
+from src.api.auth import authenticate_websocket
+from src.api.concurrency import STT_TIMEOUT_SEC, TTS_TIMEOUT_SEC, run_blocking
+from src.api.limits import (
+    MAX_AUDIO_BYTES,
+    MAX_EDITOR_CHARS,
+    MIN_AUDIO_BYTES,
+    enforce_max_bytes,
+)
 from src.api.models import (
     InterviewStartRequest,
     InterviewStartResponse,
@@ -29,6 +37,42 @@ from src.services.llm import _extract_text
 from src.storage import BodhiStorage
 
 router = APIRouter(prefix="/api/interviews", tags=["interviews"])
+
+
+def _assert_session_owner(storage: BodhiStorage, session_id: str, user_id: str) -> None:
+    """Authorize that `user_id` owns `session_id`, else raise.
+
+    The sessions table is the source of truth — clerk_user_id is recorded at
+    create_session(). Non-owners get a 404 (not 403) so the endpoint does not
+    reveal that a session exists.
+    """
+    info = storage.get_session_info(session_id)
+    if not info or info.get("clerk_user_id") != user_id:
+        raise HTTPException(404, f"Session '{session_id}' not found")
+
+
+def _resolve_owned_profile_id(
+    storage: BodhiStorage, body_user_id: str | None, user_id: str
+) -> str | None:
+    """Resolve the candidate profile id for this request, enforcing ownership.
+
+    If the client supplies a profile id (body.user_id), verify it belongs to the
+    authenticated user before using it — otherwise a user could run an interview
+    against someone else's resume. When no id is supplied, derive it from the
+    caller's Clerk identity. Profiles with no recorded owner (local/dev) are
+    allowed through so the anonymous dev flow keeps working.
+    """
+    if body_user_id:
+        if not storage:
+            return body_user_id
+        profile = storage.get_user_profile(body_user_id)
+        if not profile:
+            raise HTTPException(404, "Profile not found")
+        owner = profile.get("clerk_user_id")
+        if owner not in (None, "", user_id):
+            raise HTTPException(403, "You do not have access to this profile")
+        return body_user_id
+    return storage.get_user_profile_id_by_clerk_user_id(user_id) if storage else None
 
 
 def _load_entity_context(company: str, role: str, cache, storage) -> str:
@@ -275,9 +319,7 @@ async def prepare_interview(
     """Sync prepare: loads context, generates curriculum, and creates session_id."""
     session_id = uuid.uuid4().hex[:12]
 
-    resolved_user_profile_id = body.user_id
-    if not resolved_user_profile_id and storage:
-        resolved_user_profile_id = storage.get_user_profile_id_by_clerk_user_id(user_id)
+    resolved_user_profile_id = _resolve_owned_profile_id(storage, body.user_id, user_id)
 
     candidate_profile, jd_context, gap_map = _load_candidate_context(
         body.mode, resolved_user_profile_id, body.jd_text, storage, llm
@@ -360,9 +402,7 @@ async def start_interview(
 ):
     session_id = uuid.uuid4().hex[:12]
 
-    resolved_user_profile_id = body.user_id
-    if not resolved_user_profile_id and storage:
-        resolved_user_profile_id = storage.get_user_profile_id_by_clerk_user_id(user_id)
+    resolved_user_profile_id = _resolve_owned_profile_id(storage, body.user_id, user_id)
 
     candidate_profile, jd_context, gap_map = _load_candidate_context(
         body.mode, resolved_user_profile_id, body.jd_text, storage, llm
@@ -421,7 +461,7 @@ async def start_interview(
         "gap_map": gap_map,
     }
 
-    result = graph.invoke(initial_state, config=graph_config)
+    result = await asyncio.to_thread(graph.invoke, initial_state, graph_config)
     greeting = _extract_text(
         result["messages"][-1].content
         if result["messages"] and hasattr(result["messages"][-1], "content")
@@ -432,8 +472,10 @@ async def start_interview(
     if sarvam_key and greeting:
         try:
             from src.services.tts import text_to_speech_bytes
-            audio_bytes = text_to_speech_bytes(
+            audio_bytes = await run_blocking(
+                text_to_speech_bytes,
                 greeting, api_key=sarvam_key, target_language_code="hi-IN", speaker="shubh",
+                timeout=TTS_TIMEOUT_SEC, label="Speech synthesis",
             )
             audio_b64 = base64.b64encode(audio_bytes).decode()
         except Exception:
@@ -452,9 +494,11 @@ async def send_message(
     body: MessageRequest,
     user_id: str = Depends(require_auth),
     graph=Depends(get_graph),
+    storage: BodhiStorage = Depends(get_storage),
     cache: BodhiCache | None = Depends(get_cache),
     sarvam_key: str = Depends(get_sarvam_key),
 ):
+    _assert_session_owner(storage, session_id, user_id)
     graph_config = {"configurable": {"thread_id": session_id}}
 
     try:
@@ -466,9 +510,10 @@ async def send_message(
     except Exception:
         raise HTTPException(404, f"Session '{session_id}' not found")
 
-    result = graph.invoke(
+    result = await asyncio.to_thread(
+        graph.invoke,
         {"messages": [HumanMessage(content=body.text)]},
-        config=graph_config,
+        graph_config,
     )
 
     reply = ""
@@ -482,8 +527,10 @@ async def send_message(
     if sarvam_key and reply:
         try:
             from src.services.tts import text_to_speech_bytes
-            audio_bytes = text_to_speech_bytes(
+            audio_bytes = await run_blocking(
+                text_to_speech_bytes,
                 reply, api_key=sarvam_key, target_language_code="hi-IN", speaker="shubh",
+                timeout=TTS_TIMEOUT_SEC, label="Speech synthesis",
             )
             audio_b64 = base64.b64encode(audio_bytes).decode()
         except Exception:
@@ -522,6 +569,7 @@ async def send_audio(
     sarvam_key: str = Depends(get_sarvam_key),
 ):
     """Upload WAV audio, transcribe via STT, then process through interview graph."""
+    _assert_session_owner(storage, session_id, user_id)
     graph_config = {"configurable": {"thread_id": session_id}}
 
     try:
@@ -534,24 +582,28 @@ async def send_audio(
         raise HTTPException(404, f"Session '{session_id}' not found")
 
     audio_bytes = await file.read()
-    if not audio_bytes or len(audio_bytes) < 1000:
+    enforce_max_bytes(audio_bytes, MAX_AUDIO_BYTES, "Audio")
+    if not audio_bytes or len(audio_bytes) < MIN_AUDIO_BYTES:
         raise HTTPException(400, "Audio file too small or empty")
 
     if not sarvam_key:
         raise HTTPException(500, "SARVAM_API_KEY not configured")
 
     from src.services.stt import transcribe_audio
-    transcript = transcribe_audio(
+    transcript = await run_blocking(
+        transcribe_audio,
         audio_bytes, api_key=sarvam_key, model="saaras:v3", language_code="en-IN",
+        timeout=STT_TIMEOUT_SEC, label="Transcription",
     )
 
     transcript = (transcript or "").strip()
     if not transcript:
         raise HTTPException(422, "Could not transcribe audio")
 
-    result = graph.invoke(
+    result = await asyncio.to_thread(
+        graph.invoke,
         {"messages": [HumanMessage(content=transcript)]},
-        config=graph_config,
+        graph_config,
     )
 
     reply = ""
@@ -565,8 +617,10 @@ async def send_audio(
     if sarvam_key and reply:
         try:
             from src.services.tts import text_to_speech_bytes
-            audio_bytes_out = text_to_speech_bytes(
+            audio_bytes_out = await run_blocking(
+                text_to_speech_bytes,
                 reply, api_key=sarvam_key, target_language_code="hi-IN", speaker="shubh",
+                timeout=TTS_TIMEOUT_SEC, label="Speech synthesis",
             )
             audio_b64 = base64.b64encode(audio_bytes_out).decode()
         except Exception:
@@ -599,7 +653,9 @@ async def get_session(
     session_id: str,
     user_id: str = Depends(require_auth),
     graph=Depends(get_graph),
+    storage: BodhiStorage = Depends(get_storage),
 ):
+    _assert_session_owner(storage, session_id, user_id)
     graph_config = {"configurable": {"thread_id": session_id}}
     try:
         state = graph.get_state(graph_config)
@@ -630,6 +686,7 @@ async def end_interview(
     storage: BodhiStorage = Depends(get_storage),
     cache: BodhiCache | None = Depends(get_cache),
 ):
+    _assert_session_owner(storage, session_id, user_id)
     graph_config = {"configurable": {"thread_id": session_id}}
     try:
         state = graph.get_state(graph_config)
@@ -740,7 +797,7 @@ def _flush_session_sync(
             
             summary = report_data.get("hiring_recommendation", f"Interview complete. {total_q} questions across {len(scores)} phases.")
         except Exception as e:
-            _log.warning(f"Failed to generate report: {e}")
+            _stream_log.warning(f"Failed to generate report: {e}")
             summary = f"Interview complete. {total_q} questions across {len(scores)} phases."
         
         storage.end_session(session_id, overall_score=overall_score, summary=summary, report_data=report_data)
@@ -808,6 +865,12 @@ async def interview_websocket(
     from src.services.tts import SarvamTTSStream, split_sentences
     from src.services.stt_deepgram import DeepgramStreamingSTT
 
+    # Authenticate the handshake before accepting the socket.
+    ws_user_id = await authenticate_websocket(websocket)
+    if ws_user_id is None:
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+
     await websocket.accept()
 
     tts_sample_rate = getattr(websocket.app.state, "tts_sample_rate", 22050)
@@ -815,6 +878,17 @@ async def interview_websocket(
     session_tts: "SarvamTTSStream | None" = None
     session_stt: "DeepgramStreamingSTT | None" = None
     pipeline_task: asyncio.Task | None = None
+
+    # Verbal-reassurance ("relax") state — triggered by high proctoring violation
+    # rate. Cooldown prevents Bodhi from nagging.
+    last_reassure_at = 0.0
+    reassure_idx = 0
+    REASSURE_COOLDOWN_SEC = 60.0
+    REASSURE_LINES = [
+        "Hey, no rush at all — take a breath and relax. You're doing great.",
+        "Just take your time and stay relaxed. There's no pressure here.",
+        "Take a moment if you need it. Stay calm — you've got this.",
+    ]
 
     try:
         initial_state = None
@@ -830,13 +904,24 @@ async def interview_websocket(
             await websocket.close(code=1008, reason="Session not prepared")
             return
 
+        # Authorize: the authenticated user must own this session.
+        # Sessions without a recorded owner (local/dev) are left accessible.
+        session_owner = initial_state.get("clerk_user_id")
+        if session_owner not in (None, "", ws_user_id):
+            _stream_log.warning(
+                f"WS auth: user {ws_user_id} attempted to access session {session_id} "
+                f"owned by {session_owner}"
+            )
+            await websocket.close(code=1008, reason="Not authorized for this session")
+            return
+
         graph_config = {"configurable": {"thread_id": session_id}}
 
         # Load messages back (we didn't store HumanMessage in Redis)
         initial_state["messages"] = [HumanMessage(content="Hello, I'm ready for my interview.")]
 
         # First graph invocation (Greeting)
-        result = graph.invoke(initial_state, config=graph_config)
+        result = await asyncio.to_thread(graph.invoke, initial_state, graph_config)
         greeting = ""
         if result["messages"] and hasattr(result["messages"][-1], "content"):
             greeting = _extract_text(result["messages"][-1].content).strip()
@@ -877,7 +962,7 @@ async def interview_websocket(
                 async for chunk in session_tts.stream_tts(_greeting_sentences()):
                     await websocket.send_bytes(chunk)
             except Exception as e:
-                _stream_log.error(f"WS TTS greeting error: {e}")
+                _stream_log.exception(f"WS TTS greeting error: {type(e).__name__}: {e!r}")
         await websocket.send_json({
             "type": "control",
             "event": "greeting_complete",
@@ -929,7 +1014,16 @@ async def interview_websocket(
             if should_end:
                 try:
                     state_dict = graph.get_state(graph_config).values
-                    _flush_session_async(session_id, state_dict, graph_config)
+                    # Generate + persist the report so /report/{id} isn't a 404.
+                    # _flush_session_sync is blocking (LLM report gen + DB writes)
+                    # so run it off the event loop. Best-effort: never let report
+                    # failure stop the socket from closing.
+                    try:
+                        await asyncio.to_thread(
+                            _flush_session_sync, session_id, state_dict, storage, cache
+                        )
+                    except Exception as flush_exc:
+                        _stream_log.error("Session flush failed: %s", flush_exc, exc_info=True)
                 finally:
                     await websocket.close()
 
@@ -963,6 +1057,33 @@ async def interview_websocket(
             on_utterance_end=on_utterance_end,
         )
 
+        async def speak_reassurance() -> None:
+            """Speak a short 'relax' line when proctoring reports a high violation
+            rate. Rate-limited by REASSURE_COOLDOWN_SEC and skipped mid-turn so it
+            never talks over the candidate or an active question."""
+            nonlocal last_reassure_at, reassure_idx
+            now = asyncio.get_running_loop().time()
+            if now - last_reassure_at < REASSURE_COOLDOWN_SEC:
+                return
+            if pipeline_task and not pipeline_task.done():
+                return  # don't interrupt an in-flight turn
+            last_reassure_at = now
+            line = REASSURE_LINES[reassure_idx % len(REASSURE_LINES)]
+            reassure_idx += 1
+            await websocket.send_json(
+                {"type": "control", "event": "reassurance", "text": line}
+            )
+
+            async def _one_line():
+                yield line
+
+            try:
+                await session_tts.connect()
+                async for chunk in session_tts.stream_tts(_one_line()):
+                    await websocket.send_bytes(chunk)
+            except Exception as e:
+                _stream_log.error(f"reassurance TTS error: {type(e).__name__}: {e!r}")
+
         # ── Main receive loop ────────────────────────────────────────────
         while True:
             message = await websocket.receive()
@@ -988,6 +1109,11 @@ async def interview_websocket(
                     await session_tts.connect()
                     session_stt.reset_transcript()
                     await websocket.send_json({"type": "control", "event": "interrupted"})
+
+                elif msg_type == "proctor_alert":
+                    # Frontend (browser-side CV) reports a high violation rate →
+                    # Bodhi verbally reassures the candidate. Cooldown applies.
+                    await speak_reassurance()
 
                 elif msg_type == "ping":
                     await websocket.send_json({"type": "control", "event": "pong"})
@@ -1107,11 +1233,20 @@ async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, sp
                                 pending_text.append(token_text)
 
                 elif kind == "on_chat_model_end":
-                    if node_name in ("interviewer", "") and pending_text:
+                    if node_name in ("interviewer", ""):
                         output = event.get("data", {}).get("output")
                         tool_calls = getattr(output, "tool_calls", None) if output is not None else None
                         if not tool_calls:
-                            for token_text in pending_text:
+                            # Prefer streamed tokens; fall back to the model's full
+                            # output when invoked non-streaming (Gemini's
+                            # generateContent emits no on_chat_model_stream events,
+                            # so pending_text would be empty and the turn would
+                            # silently produce no audio).
+                            texts = pending_text
+                            if not texts and output is not None and hasattr(output, "content"):
+                                full = _extract_text(output.content)
+                                texts = [full] if full else []
+                            for token_text in texts:
                                 collected_text.append(token_text)
                                 if token_callback:
                                     await token_callback(token_text)
@@ -1182,92 +1317,62 @@ async def _pipeline_audio_generator(graph, graph_config, user_input, sarvam_key,
 
 
 async def _session_pipeline_audio(graph, graph_config, user_input, tts, result_holder: dict, token_callback=None):
-    """LangGraph tokens → sentences → raw PCM-16 audio over a *persistent* TTS WS.
+    """One interview turn → raw PCM-16 audio over a *persistent* TTS WS.
 
-    Same token-extraction logic as `_llm_tts_pipeline` (interviewer-node tokens,
-    [END_INTERVIEW] handling, on_tool_end TRANSITION/END parsing) but the audio
-    sink is the per-session `SarvamTTSStream` (linear16), and only audio bytes are
-    yielded. Final metadata (reply_text/phase/should_end) is stored in
-    `result_holder` for the caller.
+    The interviewer node is a SYNC function, and LangGraph runs sync nodes in a
+    threadpool. The chat-model callbacks that `graph.astream_events()` relies on
+    do NOT propagate into that thread, so astream_events emits `on_chain_start`
+    for the node but never `on_chat_model_*` — the reply text is invisible to the
+    event stream and nothing reaches TTS (the turn "freezes"). Since the model is
+    invoked non-streaming anyway (Gemini generateContent), there is no token
+    stream to lose: we run the turn to completion with `graph.invoke()` (in a
+    thread, exactly like the greeting), pull the final reply from the result
+    state, then stream it sentence-by-sentence through the persistent TTS WS.
+
+    Final metadata (reply_text/phase/should_end) is stored in `result_holder`.
     """
-    collected_text: list[str] = []
-    phase = "unknown"
-    should_end = False
+    from src.services.tts import split_sentences
 
-    async def _llm_tokens():
-        nonlocal phase, should_end
-        # The interviewer node runs more than once per turn whenever the model
-        # calls a tool (score/transition/etc) — that invocation's narrated text
-        # is internal commentary tied to the tool call, not the final answer.
-        # Buffer per-invocation and only speak it once on_chat_model_end shows
-        # no tool_calls, otherwise the user hears two overlapping replies.
-        pending_text: list[str] = []
-        try:
-            async for event in graph.astream_events(
-                {"messages": [HumanMessage(content=user_input)]},
-                config=graph_config,
-                version="v2",
-            ):
-                kind = event.get("event", "")
-                node_name = event.get("metadata", {}).get("langgraph_node", "")
-                if kind == "on_chat_model_stream":
-                    if node_name in ("interviewer", ""):
-                        chunk = event.get("data", {}).get("chunk")
-                        if chunk and hasattr(chunk, "content"):
-                            token_text = _extract_text(chunk.content)
-                            if token_text:
-                                pending_text.append(token_text)
-                elif kind == "on_chat_model_end":
-                    if node_name in ("interviewer", "") and pending_text:
-                        output = event.get("data", {}).get("output")
-                        tool_calls = getattr(output, "tool_calls", None) if output is not None else None
-                        if not tool_calls:
-                            for token_text in pending_text:
-                                collected_text.append(token_text)
-                                if token_callback:
-                                    await token_callback(token_text)
-                                yield token_text
-                            if "[END_INTERVIEW]" in "".join(collected_text):
-                                should_end = True
-                        pending_text = []
-                elif kind == "on_tool_end":
-                    output = event.get("data", {}).get("output", "")
-                    if hasattr(output, "content"):
-                        output = output.content
-                    output = str(output)
-                    if output.startswith("TRANSITION:"):
-                        phase = output.split(":", 1)[1]
-                        _stream_log.info("[WS-PIPE] Phase transition → %s", phase)
-                    elif output.startswith("END:"):
-                        should_end = True
-                        _stream_log.info("[WS-PIPE] Interview end triggered")
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            _stream_log.error("[WS-PIPE] astream_events error: %s", e, exc_info=True)
+    # Run the full turn to completion off the event loop.
+    result = await asyncio.to_thread(
+        graph.invoke,
+        {"messages": [HumanMessage(content=user_input)]},
+        graph_config,
+    )
 
-    sentence_stream = _sentence_accumulator(_llm_tokens())
-    try:
-        async for audio_chunk in tts.stream_tts(sentence_stream):
-            yield audio_chunk
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        _stream_log.error("[WS-PIPE] TTS pipeline error: %s", exc, exc_info=True)
+    reply_text = ""
+    msgs = result.get("messages") if isinstance(result, dict) else None
+    if msgs and hasattr(msgs[-1], "content"):
+        reply_text = _extract_text(msgs[-1].content).strip()
 
-    # Reconcile phase/should_end from committed graph state.
-    try:
-        state = graph.get_state(graph_config)
-        if state and state.values:
-            phase = state.values.get("current_phase", phase)
-            should_end = state.values.get("should_end", should_end)
-    except Exception:
-        pass
-
-    reply_text = "".join(collected_text).strip()
+    phase = result.get("current_phase", "unknown") if isinstance(result, dict) else "unknown"
+    should_end = bool(result.get("should_end", False)) if isinstance(result, dict) else False
     if "[END_INTERVIEW]" in reply_text:
         should_end = True
         reply_text = reply_text.replace("[END_INTERVIEW]", "").strip()
+
+    _stream_log.info("[WS-PIPE] turn reply=%d chars phase=%s end=%s", len(reply_text), phase, should_end)
+
+    # Surface the full reply text to the client (live transcript) up front.
+    if token_callback and reply_text:
+        try:
+            await token_callback(reply_text)
+        except Exception:
+            pass
+
+    # Stream the reply through the persistent linear16 TTS WS, sentence by sentence.
+    if reply_text:
+        async def _sentences():
+            for s in split_sentences(reply_text):
+                if s.strip():
+                    yield s
+        try:
+            async for audio_chunk in tts.stream_tts(_sentences()):
+                yield audio_chunk
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _stream_log.error("[WS-PIPE] TTS pipeline error: %s", exc, exc_info=True)
 
     result_holder.update({"reply_text": reply_text, "phase": phase, "should_end": should_end})
 
@@ -1298,9 +1403,7 @@ async def start_interview_stream(
     loop = asyncio.get_event_loop()
     session_id = uuid.uuid4().hex[:12]
 
-    resolved_user_profile_id = body.user_id
-    if not resolved_user_profile_id and storage:
-        resolved_user_profile_id = storage.get_user_profile_id_by_clerk_user_id(user_id)
+    resolved_user_profile_id = _resolve_owned_profile_id(storage, body.user_id, user_id)
 
     _stream_log.info("[START-STREAM] Session %s: loading context...", session_id)
 
@@ -1400,10 +1503,12 @@ async def send_message_stream(
     body: MessageRequest,
     user_id: str = Depends(require_auth),
     graph=Depends(get_graph),
+    storage: BodhiStorage = Depends(get_storage),
     cache: BodhiCache | None = Depends(get_cache),
     sarvam_key: str = Depends(get_sarvam_key),
 ):
     """Send text message and stream reply audio as MP3 (low-latency pipeline)."""
+    _assert_session_owner(storage, session_id, user_id)
     graph_config = {"configurable": {"thread_id": session_id}}
 
     try:
@@ -1468,6 +1573,7 @@ async def send_audio_stream(
     sarvam_key: str = Depends(get_sarvam_key),
 ):
     """Upload WAV audio (+ optional webcam frame + optional editor content) and stream reply audio as MP3."""
+    _assert_session_owner(storage, session_id, user_id)
     graph_config = {"configurable": {"thread_id": session_id}}
 
     try:
@@ -1480,7 +1586,8 @@ async def send_audio_stream(
         raise HTTPException(404, f"Session '{session_id}' not found")
 
     audio_bytes = await file.read()
-    if not audio_bytes or len(audio_bytes) < 1000:
+    enforce_max_bytes(audio_bytes, MAX_AUDIO_BYTES, "Audio")
+    if not audio_bytes or len(audio_bytes) < MIN_AUDIO_BYTES:
         raise HTTPException(400, "Audio file too small or empty")
 
     image_bytes = (await image_file.read()) if image_file else None
@@ -1489,15 +1596,19 @@ async def send_audio_stream(
         raise HTTPException(500, "SARVAM_API_KEY not configured")
 
     from src.services.stt import transcribe_audio
-    transcript = transcribe_audio(
+    transcript = await run_blocking(
+        transcribe_audio,
         audio_bytes, api_key=sarvam_key, model="saaras:v3", language_code="en-IN",
+        timeout=STT_TIMEOUT_SEC, label="Transcription",
     )
 
     transcript = (transcript or "").strip()
     if not transcript:
         raise HTTPException(422, "Could not transcribe audio")
-    
+
     # ── Append editor content if provided (for technical/DSA phases) ──────────
+    if editor_content and len(editor_content) > MAX_EDITOR_CHARS:
+        raise HTTPException(413, f"Editor content too large (max {MAX_EDITOR_CHARS} characters)")
     user_input = transcript
     if editor_content and editor_content.strip():
         # Get current phase to determine if we should include editor context
@@ -1668,16 +1779,18 @@ async def get_interview_report(
     storage: BodhiStorage = Depends(get_storage),
 ):
     """Get the comprehensive interview report for a session."""
+    _assert_session_owner(storage, session_id, user_id)
     try:
         report_data = storage.get_session_report_data(session_id)
         if not report_data:
             raise HTTPException(404, f"Report not found for session '{session_id}'")
-        
+
         return report_data
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(500, f"Failed to retrieve report: {str(e)}")
+    except Exception:
+        _stream_log.exception(f"Failed to retrieve report for session {session_id}")
+        raise HTTPException(500, "Failed to retrieve report")
 
 
 @router.get("/{session_id}/report/pdf")
@@ -1689,15 +1802,16 @@ async def download_interview_report_pdf(
     """Generate and download the interview report as a PDF."""
     from fastapi.responses import StreamingResponse
     import io
-    
+
+    _assert_session_owner(storage, session_id, user_id)
     try:
         report_data = storage.get_session_report_data(session_id)
         if not report_data:
             raise HTTPException(404, f"Report not found for session '{session_id}'")
-        
+
         # Generate PDF
         pdf_bytes = _generate_pdf_report(report_data)
-        
+
         # Return as downloadable file
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
@@ -1708,8 +1822,9 @@ async def download_interview_report_pdf(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(500, f"Failed to generate PDF: {str(e)}")
+    except Exception:
+        _stream_log.exception(f"Failed to generate PDF for session {session_id}")
+        raise HTTPException(500, "Failed to generate PDF")
 
 
 def _generate_pdf_report(report_data: dict) -> bytes:

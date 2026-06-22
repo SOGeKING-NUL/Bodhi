@@ -106,7 +106,7 @@ At session end:
   - The `end_interview` API endpoint routes the frontend instantly while scheduling backend flushing in FastAPI `BackgroundTasks`.
   - All phase memories flushed to NeonDB (phase_memories table) (async background task).
   - All answer scores flushed to NeonDB (answer_scores table) (async background task).
-  - **Report Agent Pipeline**: Total transcript + behavioral summaries are sent to a dedicated LLM Agent (`src/agents/report_agent.py`) which synthesizes the final hiring recommendation, qualitative strengths, and cross-section insights. (async background task)
+  - **Report Agent Pipeline**: Total transcript + behavioral summaries are sent to a dedicated LLM Agent (`backend/src/agents/report_agent.py`) which synthesizes the final hiring recommendation, qualitative strengths, and cross-section insights. (async background task)
   - Final structured report is compiled from Agent+Deterministic data.
 ```
 

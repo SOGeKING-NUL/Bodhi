@@ -41,8 +41,12 @@ async def lifespan(app: FastAPI):
     from src.storage import BodhiStorage
     from src.cache import BodhiCache
     from src.services.llm import create_llm
-    from src.graph import build_interview_graph
+    from src.graph import build_interview_graph, create_durable_checkpointer
+    from src.api.auth import assert_auth_configured
     from loguru import logger
+
+    # Fail fast if auth is neither configured nor explicitly bypassed.
+    assert_auth_configured()
 
     db_url = os.getenv("DATABASE_URL", "")
     if not db_url:
@@ -76,42 +80,79 @@ async def lifespan(app: FastAPI):
     google_key = os.getenv("GOOGLE_API_KEY", "")
     llm = create_llm(api_key=google_key, model="gemini-3.1-flash-lite-preview")
     app.state.llm = llm
-    app.state.graph = build_interview_graph(llm)
+    # Durable interview state (falls back to in-memory if deps/DB unavailable).
+    checkpointer = create_durable_checkpointer(db_url)
+    app.state.graph = build_interview_graph(llm, checkpointer=checkpointer)
     app.state.sarvam_key = os.getenv("SARVAM_API_KEY", "")
     app.state.deepgram_key = os.getenv("DEEPGRAM_API_KEY", "")
     app.state.tts_sample_rate = int(os.getenv("SARVAM_TTS_SAMPLE_RATE", "22050"))
 
     # ── Initialize Proctoring CV Models ──────────────────────────────────────
-    logger.info("Loading proctoring CV models...")
-    try:
-        from src.proctoring_backend.services.proctoring.face_detection import FaceDetector
-        from src.proctoring_backend.services.proctoring.gaze_analysis import GazeAnalyzer
-        from src.proctoring_backend.services.proctoring.object_detection import ObjectDetector
-        from src.proctoring_backend.services.proctoring.emotion_analysis import EmotionAnalyzer
+    # Each model loads independently so one failure (e.g. emotion model download)
+    # doesn't disable the entire proctoring pipeline. The whole block can be
+    # disabled with PROCTORING_ENABLED=false — useful when the native CV stack
+    # (mediapipe/tensorflow) segfaults in a given environment, which would
+    # otherwise crash the worker (a SIGSEGV can't be caught by try/except).
+    _proctoring_enabled = os.getenv("PROCTORING_ENABLED", "true").strip().lower() in (
+        "1", "true", "yes",
+    )
+    if not _proctoring_enabled:
+        logger.warning("Proctoring disabled via PROCTORING_ENABLED=false")
+        for _attr in ("face_detector", "gaze_analyzer", "object_detector", "emotion_analyzer"):
+            setattr(app.state, _attr, None)
+        _factories = {}
+    else:
+        logger.info("Loading proctoring CV models...")
+        try:
+            from src.proctoring_backend.services.proctoring.face_detection import FaceDetector
+            from src.proctoring_backend.services.proctoring.gaze_analysis import GazeAnalyzer
+            from src.proctoring_backend.services.proctoring.object_detection import ObjectDetector
+            from src.proctoring_backend.services.proctoring.emotion_analysis import EmotionAnalyzer
+            _factories = {
+                "face_detector": FaceDetector,
+                "gaze_analyzer": GazeAnalyzer,
+                "object_detector": ObjectDetector,
+                "emotion_analyzer": EmotionAnalyzer,
+            }
+        except Exception as e:
+            logger.warning(f"⚠ Proctoring dependencies unavailable: {e}")
+            _factories = {}
 
-        app.state.face_detector = FaceDetector()
-        app.state.gaze_analyzer = GazeAnalyzer()
-        app.state.object_detector = ObjectDetector()
-        app.state.emotion_analyzer = EmotionAnalyzer()
-        logger.info("✓ Proctoring CV models loaded successfully")
-    except Exception as e:
-        logger.warning(f"⚠ Proctoring models failed to load: {e}")
-        logger.warning("Proctoring features will be unavailable")
-        app.state.face_detector = None
-        app.state.gaze_analyzer = None
-        app.state.object_detector = None
-        app.state.emotion_analyzer = None
+    for _attr in ("face_detector", "gaze_analyzer", "object_detector", "emotion_analyzer"):
+        _factory = _factories.get(_attr)
+        if _factory is None:
+            setattr(app.state, _attr, None)
+            continue
+        try:
+            setattr(app.state, _attr, _factory())
+            logger.info(f"✓ {_attr} loaded")
+        except Exception as e:
+            logger.warning(f"⚠ {_attr} failed to load: {e}")
+            setattr(app.state, _attr, None)
+
+    _core_ok = all(
+        getattr(app.state, a, None) is not None
+        for a in ("face_detector", "gaze_analyzer", "object_detector")
+    )
+    logger.info(
+        "Proctoring core models %s; emotion %s",
+        "ready" if _core_ok else "UNAVAILABLE",
+        "ready" if getattr(app.state, "emotion_analyzer", None) else "disabled",
+    )
 
     # ── Initialize Behavioral Models ─────────────────────────────────────────
-    logger.info("Loading behavioral analysis models...")
-    try:
-        from src.behavioral_analysis.services.speech_service import load_models as load_speech_models
-        from src.behavioral_analysis.services.posture_service import load_models as load_posture_models
-        load_speech_models()
-        load_posture_models()
-        logger.info("✓ Behavioral models loaded successfully")
-    except Exception as e:
-        logger.warning(f"⚠ Behavioral models failed to load: {e}")
+    if not _proctoring_enabled:
+        logger.warning("Behavioral models skipped (PROCTORING_ENABLED=false)")
+    else:
+        logger.info("Loading behavioral analysis models...")
+        try:
+            from src.behavioral_analysis.services.speech_service import load_models as load_speech_models
+            from src.behavioral_analysis.services.posture_service import load_models as load_posture_models
+            load_speech_models()
+            load_posture_models()
+            logger.info("✓ Behavioral models loaded successfully")
+        except Exception as e:
+            logger.warning(f"⚠ Behavioral models failed to load: {e}")
 
     yield
 
@@ -125,9 +166,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Allowed origins are read from BODHI_ALLOWED_ORIGINS (comma-separated).
+# A wildcard "*" combined with allow_credentials=True is invalid per the CORS
+# spec and is rejected by browsers, so we require an explicit allowlist.
+_origins_env = os.getenv("BODHI_ALLOWED_ORIGINS", "").strip()
+_allowed_origins = (
+    [o.strip() for o in _origins_env.split(",") if o.strip()]
+    if _origins_env
+    else ["http://localhost:3000", "http://localhost:5173"]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -141,6 +192,11 @@ app.add_middleware(
         "X-Bodhi-Sentiment",
     ],
 )
+
+# Per-client rate limiting (no-op if slowapi is absent or disabled via env).
+from src.api.ratelimit import setup_rate_limiting
+
+setup_rate_limiting(app)
 
 from src.api.roles import router as roles_router
 from src.api.companies import router as companies_router
@@ -164,12 +220,16 @@ app.include_router(users_router)
 @app.get("/health")
 @app.get("/api/health")
 async def health():
+    models = {
+        name: getattr(app.state, name, None) is not None
+        for name in ("face_detector", "gaze_analyzer", "object_detector", "emotion_analyzer")
+    }
+    # Core proctoring needs face + gaze + object; emotion is an optional enhancer.
+    proctoring_enabled = all(
+        models[m] for m in ("face_detector", "gaze_analyzer", "object_detector")
+    )
     return {
         "status": "ok",
-        "proctoring_enabled": all([
-            hasattr(app.state, "face_detector") and app.state.face_detector is not None,
-            hasattr(app.state, "gaze_analyzer") and app.state.gaze_analyzer is not None,
-            hasattr(app.state, "object_detector") and app.state.object_detector is not None,
-            hasattr(app.state, "emotion_analyzer") and app.state.emotion_analyzer is not None,
-        ]),
+        "proctoring_enabled": proctoring_enabled,
+        "proctoring_models": models,
     }

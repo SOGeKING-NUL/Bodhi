@@ -56,7 +56,13 @@ export default function InterviewPage() {
 
   // Custom hooks
   const audio = useInterviewAudio()
-  const proctoring = useProctoring(videoRef, canvasRef)
+  // When browser-side proctoring sees a high violation rate, ask Bodhi to
+  // verbally reassure the candidate ("take a breath, relax"). The backend
+  // rate-limits this, so firing freely here is safe.
+  const handleProctorAlert = useCallback(() => {
+    audio.sendControl({ type: "proctor_alert" })
+  }, [audio])
+  const proctoring = useProctoring(videoRef, canvasRef, handleProctorAlert)
   const sentiment = useSentimentAnalysis()
 
   useEffect(() => {
