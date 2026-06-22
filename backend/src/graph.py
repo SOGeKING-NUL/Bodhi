@@ -1,6 +1,7 @@
 """LangGraph interview orchestration graph."""
 
 import logging
+import os
 from datetime import datetime, timezone
 
 from langchain_core.messages import SystemMessage
@@ -198,14 +199,74 @@ def _compact_memory_node(state: InterviewState) -> dict:
         return {}
 
 
-def build_interview_graph(llm):
+def create_durable_checkpointer(database_url: str | None):
+    """Build a Postgres-backed checkpointer so interview state survives restarts
+    and can be shared across multiple workers/containers.
+
+    Returns None (caller should fall back to in-memory) if the optional
+    dependencies aren't installed or the connection can't be established — the
+    app must still boot. Install 'langgraph-checkpoint-postgres' and
+    'psycopg[binary,pool]' to enable durable state.
+    """
+    if not database_url:
+        return None
+    # The sync PostgresSaver is incompatible with the async streaming path
+    # (graph.astream_events → aget_tuple raises NotImplementedError). Until the
+    # graph is migrated to an async checkpointer, durable state is opt-in; by
+    # default we use the in-memory MemorySaver which supports both sync + async.
+    if os.getenv("DURABLE_CHECKPOINTER", "").strip().lower() not in ("1", "true", "yes"):
+        log.info(
+            "Durable checkpointer disabled (set DURABLE_CHECKPOINTER=true once the "
+            "async checkpointer migration is done). Using in-memory interview state."
+        )
+        return None
+    try:
+        from langgraph.checkpoint.postgres import PostgresSaver
+        from psycopg_pool import ConnectionPool
+    except ImportError as e:
+        log.warning(
+            "Durable checkpointer unavailable (%s); using in-memory state. "
+            "Interview sessions will be LOST on restart and cannot be shared "
+            "across workers. Install langgraph-checkpoint-postgres + psycopg[pool].",
+            e,
+        )
+        return None
+    try:
+        pool = ConnectionPool(
+            conninfo=database_url,
+            max_size=int(os.getenv("CHECKPOINT_POOL_MAX", "10")),
+            open=True,
+            # NeonDB (and most managed Postgres) drop idle connections, which
+            # would otherwise hand a dead connection to graph.invoke ("SSL
+            # connection has been closed unexpectedly"). check_connection
+            # validates each connection on checkout and discards stale ones;
+            # max_lifetime/max_idle recycle them before Neon times them out.
+            check=ConnectionPool.check_connection,
+            max_lifetime=300,
+            max_idle=120,
+            kwargs={"autocommit": True},
+        )
+        checkpointer = PostgresSaver(pool)
+        checkpointer.setup()  # idempotent — creates checkpoint tables if missing
+        log.info("Using PostgresSaver for durable interview state.")
+        return checkpointer
+    except Exception as e:
+        log.warning(
+            "Failed to initialize PostgresSaver (%s); using in-memory state.", e
+        )
+        return None
+
+
+def build_interview_graph(llm, checkpointer=None):
     """Construct and compile the interview StateGraph.
 
     Args:
         llm: A ChatGoogleGenerativeAI instance (from create_llm).
+        checkpointer: Optional LangGraph checkpointer. If None, an in-memory
+            MemorySaver is used (suitable for the CLI / tests, but NOT durable).
 
     Returns:
-        Compiled LangGraph graph with MemorySaver checkpointer.
+        Compiled LangGraph graph.
     """
     model_with_tools = llm.bind_tools(ALL_TOOLS)
 
@@ -295,5 +356,6 @@ def build_interview_graph(llm):
     )
     builder.add_edge("compact_memory", "interviewer")
 
-    checkpointer = MemorySaver()
+    if checkpointer is None:
+        checkpointer = MemorySaver()
     return builder.compile(checkpointer=checkpointer)

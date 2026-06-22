@@ -32,8 +32,23 @@ class Settings(BaseSettings):
 
     # CV model configuration
     FACE_RECOGNITION_MODEL: str = "Facenet512"
-    OBJECT_DETECTION_CONFIDENCE: float = 0.5
+    OBJECT_DETECTION_CONFIDENCE: float = 0.55
     YOLO_MODEL_VARIANT: str = "yolov8n"  # nano for local, override to yolov8m on AWS via .env
+
+    # ── Proctoring tuning (all overridable via env) ───────────────────────────
+    # Detector sensitivity
+    FACE_MIN_DETECTION_CONFIDENCE: float = 0.6
+    FACE_CENTER_TOLERANCE: float = 0.32          # higher = more lenient framing
+    MULTI_FACE_MIN_CONFIDENCE: float = 0.6       # ignore low-confidence ghost faces
+
+    # Debounce: how many *consecutive* offending frames before we flag a
+    # violation. At ~1 FPS these are roughly "seconds". Higher = fewer false
+    # positives, slightly slower to react.
+    NO_FACE_TRIGGER: int = 2
+    GAZE_TRIGGER: int = 3
+    FACE_CENTER_TRIGGER: int = 3
+    MULTI_FACE_TRIGGER: int = 2
+    OBJECT_TRIGGER: int = 2
 
     class Config:
         env_file=".env"

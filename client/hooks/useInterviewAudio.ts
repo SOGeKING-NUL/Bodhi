@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react"
+import { useAuth } from "@clerk/nextjs"
 import { useSeamlessAudio } from "./useSeamlessAudio"
 
 // Client-side VAD is used ONLY for barge-in detection. End-of-turn detection
@@ -42,6 +43,7 @@ function floatToPcm16(float32: Float32Array): ArrayBuffer {
 }
 
 export function useInterviewAudio() {
+  const { getToken } = useAuth()
   const [level, setLevel] = useState(0)
   const [isUserSpeaking, setIsUserSpeaking] = useState(false)
 
@@ -192,7 +194,7 @@ export function useInterviewAudio() {
     setSpeakingIndicator(false)
   }, [setSpeakingIndicator])
 
-  const connectWebSocket = useCallback((
+  const connectWebSocket = useCallback(async (
     sessionId: string,
     callbacks: {
       onGreetingStart: (text: string, phase: string) => void,
@@ -211,7 +213,11 @@ export function useInterviewAudio() {
 
     let baseUrl = process.env.NEXT_PUBLIC_API_URL || window.location.origin
     baseUrl = baseUrl.replace(/^http/, 'ws')
-    const ws = new WebSocket(`${baseUrl}/api/interviews/${sessionId}/ws`)
+    // Browsers can't set Authorization headers on WebSockets, so the backend
+    // accepts the Clerk token as a `token` query param for the handshake.
+    const token = await getToken()
+    const url = `${baseUrl}/api/interviews/${sessionId}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`
+    const ws = new WebSocket(url)
     ws.binaryType = "arraybuffer"
 
     ws.onopen = () => {
@@ -264,7 +270,15 @@ export function useInterviewAudio() {
     }
 
     wsRef.current = ws
-  }, [seamlessAudio])
+  }, [seamlessAudio, getToken])
+
+  /** Send a JSON control message on the interview WebSocket (e.g. proctor_alert). */
+  const sendControl = useCallback((obj: Record<string, unknown>) => {
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify(obj)) } catch {}
+    }
+  }, [])
 
   return {
     level,
@@ -275,5 +289,6 @@ export function useInterviewAudio() {
     startListening,
     stopListening,
     connectWebSocket,
+    sendControl,
   }
 }

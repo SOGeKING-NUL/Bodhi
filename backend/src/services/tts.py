@@ -10,7 +10,6 @@ import re
 from typing import AsyncGenerator, AsyncIterator
 from urllib.parse import urlencode
 
-import sounddevice as sd
 import soundfile as sf
 import websockets
 from sarvamai import SarvamAI
@@ -42,7 +41,14 @@ def text_to_speech_bytes(
 
 
 def play_audio(audio_bytes: bytes) -> None:
-    """Play audio bytes using sounddevice. Assumes WAV format from Bulbul."""
+    """Play audio bytes using sounddevice. Assumes WAV format from Bulbul.
+
+    Imports sounddevice lazily because it requires the native PortAudio library,
+    which is only present on machines with audio hardware (local CLI). The server
+    never calls this — it streams audio over the WebSocket instead.
+    """
+    import sounddevice as sd
+
     data, sample_rate = sf.read(io.BytesIO(audio_bytes))
     sd.play(data, sample_rate)
     sd.wait()

@@ -1,7 +1,13 @@
 """Gemini LLM via LangChain."""
 
+import os
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+# Bound every LLM call so a hung/slow Gemini request can't block a turn forever.
+LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "90"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
 
 DEFAULT_SYSTEM_PROMPT = """You are a friendly, helpful assistant. You can speak in Hindi, English, or Hinglish (code-mixed) naturally.
 Keep responses concise and conversational—suitable for voice playback.
@@ -14,6 +20,8 @@ def create_llm(api_key: str, model: str = "gemini-3.1-flash-lite-preview") -> Ch
         model=model,
         google_api_key=api_key,
         temperature=0.7,
+        timeout=LLM_TIMEOUT_SEC,
+        max_retries=LLM_MAX_RETRIES,
     )
 
 

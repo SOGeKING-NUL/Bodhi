@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import numpy as np
 import cv2
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from loguru import logger
 from typing import Dict, Optional
 from datetime import datetime, timezone
 import json
 import asyncio
+
+from src.api.auth import authenticate_websocket
+from src.api.deps import get_storage, require_auth
+from src.api.limits import MAX_WS_FRAME_CHARS
+from src.storage import BodhiStorage
 
 router = APIRouter(prefix="/api/proctoring", tags=["Proctoring"])
 
@@ -51,12 +56,37 @@ async def proctoring_websocket(websocket: WebSocket, session_id: str):
     sends frames every 2-3 seconds, and listens for violation events.
     No enrollment step required — identity comparison is disabled.
     """
+    # Authenticate the handshake and authorize the session before accepting.
+    ws_user_id = await authenticate_websocket(websocket)
+    if ws_user_id is None:
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+
+    app_state = websocket.app.state
+    storage = getattr(app_state, "storage", None)
+    info = storage.get_session_info(session_id) if storage else None
+    owner = info.get("clerk_user_id") if info else None
+    if owner not in (None, "", ws_user_id):
+        logger.warning(
+            f"Proctoring WS auth: user {ws_user_id} denied for session {session_id}"
+        )
+        await websocket.close(code=1008, reason="Not authorized for this session")
+        return
+
+    # If the CV models aren't loaded (PROCTORING_ENABLED=false or a load failure),
+    # do NOT import the CV stack here — importing mediapipe/etc on connect can
+    # SIGSEGV the worker. Instead run a lightweight "browser-CV" mode: detection
+    # happens in the candidate's browser (MediaPipe WASM) and the client reports
+    # violations here purely for persistence/report. No CV import, no segfault.
+    if getattr(app_state, "face_detector", None) is None:
+        await _run_browser_proctoring(websocket, session_id, storage)
+        return
+
+    # Models are present — safe to import and run the CV pipeline.
     from src.proctoring_backend.services.proctoring.orchestrator import ProctoringOrchestrator
 
     await websocket.accept()
     logger.info(f"Proctoring WebSocket connected | session={session_id}")
-
-    app_state = websocket.app.state
     orchestrator = ProctoringOrchestrator(
         session_id=session_id,
         candidate_id=session_id,
@@ -70,6 +100,10 @@ async def proctoring_websocket(websocket: WebSocket, session_id: str):
     try:
         while True:
             raw = await websocket.receive_text()
+
+            if len(raw) > MAX_WS_FRAME_CHARS:
+                await _send_error(websocket, "Message too large.")
+                continue
 
             try:
                 message = json.loads(raw)
@@ -105,7 +139,7 @@ async def proctoring_websocket(websocket: WebSocket, session_id: str):
     except Exception as e:
         logger.error(f"Proctoring WebSocket error | session={session_id} | error={e}")
         try:
-            await _send_error(websocket, f"Internal server error: {str(e)}")
+            await _send_error(websocket, "Internal server error.")
         except Exception:
             pass
 
@@ -114,6 +148,107 @@ async def proctoring_websocket(websocket: WebSocket, session_id: str):
             orchestrator.end_session()
         _active_proctoring_sessions.pop(session_id, None)
         logger.info(f"Proctoring session cleaned up | session={session_id}")
+
+
+# ── Browser-CV proctoring (no server-side models) ─────────────────────────────
+
+# A session is flagged once the browser reports this many violations total.
+_BROWSER_FLAG_THRESHOLD = 8
+
+
+async def _run_browser_proctoring(websocket: WebSocket, session_id: str, storage) -> None:
+    """Lightweight proctoring loop for when server-side CV is disabled.
+
+    Computer vision runs in the candidate's browser (MediaPipe Tasks for Web,
+    WASM). The browser streams `client_violation` messages here; we persist them
+    to the violations table so they appear in the post-interview report. This
+    path never imports mediapipe/torch, so it cannot SIGSEGV the worker.
+    """
+    await websocket.accept()
+    try:
+        await websocket.send_text(
+            _dumps({"type": "proctoring_mode", "mode": "browser",
+                    "message": "Proctoring active (browser-side detection)."})
+        )
+    except Exception:
+        pass
+    logger.info(f"Proctoring WS: browser-CV mode | session={session_id}")
+
+    violation_count = 0
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            if len(raw) > MAX_WS_FRAME_CHARS:
+                await _send_error(websocket, "Message too large.")
+                continue
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                await _send_error(websocket, "Invalid JSON format.")
+                continue
+
+            msg_type = message.get("type")
+
+            if msg_type == "client_violation":
+                vtype = (message.get("violation_type") or "unknown").strip()
+                severity = (message.get("severity") or "medium").strip()
+                vmsg = (message.get("message") or vtype).strip()
+                violation_count += 1
+                if storage:
+                    try:
+                        storage.save_proctoring_violation(
+                            session_id=session_id,
+                            violation_type=vtype,
+                            severity=severity,
+                            message=vmsg,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to save browser violation: {e}")
+                flagged = violation_count >= _BROWSER_FLAG_THRESHOLD
+                await websocket.send_text(_dumps({
+                    "type": "frame_result",
+                    "has_violations": True,
+                    "violations": [{
+                        "violation_type": vtype,
+                        "severity": severity,
+                        "message": vmsg,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }],
+                    "session_flagged": flagged,
+                }))
+                if flagged:
+                    await websocket.send_text(_dumps({
+                        "type": "session_flagged",
+                        "summary": {"total_violations": violation_count},
+                    }))
+
+            elif msg_type == "frame":
+                # Browser does its own CV now — ignore any legacy frame uploads
+                # but ACK so the client loop stays healthy.
+                await websocket.send_text(_dumps({
+                    "type": "frame_result", "has_violations": False,
+                    "violations": [], "session_flagged": False,
+                }))
+
+            elif msg_type == "ping":
+                await websocket.send_text(_dumps({"type": "pong"}))
+
+            elif msg_type == "end_session":
+                await websocket.send_text(_dumps({
+                    "type": "session_summary",
+                    "summary": {"total_violations": violation_count},
+                }))
+                break
+
+    except WebSocketDisconnect:
+        logger.info(f"Proctoring WS (browser) disconnected | session={session_id}")
+    except Exception as e:
+        logger.error(f"Proctoring WS (browser) error | session={session_id} | {e}")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # ── WebSocket Message Handlers ────────────────────────────────────────────────
@@ -244,8 +379,10 @@ async def _send_error(websocket: WebSocket, message: str):
 # ── Session Management ────────────────────────────────────────────────────────
 
 @router.get("/active-sessions")
-async def get_active_proctoring_sessions():
-    """Get all active proctoring sessions (admin/debug use)."""
+async def get_active_proctoring_sessions(
+    user_id: str = Depends(require_auth),
+):
+    """Get all active proctoring sessions (admin/debug use). Requires auth."""
     return {
         "active_session_count": len(_active_proctoring_sessions),
         "session_ids": list(_active_proctoring_sessions.keys()),
@@ -253,8 +390,17 @@ async def get_active_proctoring_sessions():
 
 
 @router.get("/session/{session_id}/summary")
-async def get_session_summary(session_id: str):
-    """Get proctoring summary for a specific session."""
+async def get_session_summary(
+    session_id: str,
+    user_id: str = Depends(require_auth),
+    storage: BodhiStorage = Depends(get_storage),
+):
+    """Get proctoring summary for a specific session (owner only)."""
+    info = storage.get_session_info(session_id)
+    owner = info.get("clerk_user_id") if info else None
+    if owner not in (None, "", user_id):
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found or already ended.")
+
     if session_id not in _active_proctoring_sessions:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found or already ended.")
 

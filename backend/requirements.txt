@@ -7,6 +7,9 @@ sarvamai>=0.1.0
 langchain>=0.3.0
 langchain-google-genai>=2.0.0
 langgraph>=0.2.0
+# Durable interview state (PostgresSaver). Falls back to in-memory if absent.
+langgraph-checkpoint-postgres>=2.0.0
+psycopg[binary,pool]>=3.1.0
 python-dotenv>=1.0.0
 
 # Live voice pipeline: Deepgram streaming STT + Sarvam linear16 TTS WebSockets
@@ -40,6 +43,9 @@ huggingface-hub>=0.20.0
 sentencepiece>=0.2.0
 librosa>=0.10.0
 mediapipe>=0.10.0
+
+# Rate limiting
+slowapi>=0.1.9
 
 # Clerk JWT verification
 pyjwt[crypto]>=2.8.0

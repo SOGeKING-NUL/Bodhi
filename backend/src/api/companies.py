@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from src.api.deps import get_storage
+from src.api.deps import get_storage, require_auth
 from src.api.models import CompanyProfileCreate, CompanyProfileResponse
 from src.storage import BodhiStorage
 
@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/companies", tags=["companies"])
 async def create_or_update_company(
     body: CompanyProfileCreate,
     storage: BodhiStorage = Depends(get_storage),
+    user_id: str = Depends(require_auth),
 ):
     storage.upsert_company_profile(
         company_name=body.company_name,
@@ -56,6 +57,7 @@ async def delete_company_profile(
     role: str,
     experience_level: str,
     storage: BodhiStorage = Depends(get_storage),
+    user_id: str = Depends(require_auth),
 ):
     deleted = storage.delete_company_profile(company_name, role, experience_level)
     if not deleted:

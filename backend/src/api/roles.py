@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from src.api.deps import get_storage
+from src.api.deps import get_storage, require_auth
 from src.api.models import RoleCreate, RoleResponse, RoleUpdate
 from src.storage import BodhiStorage
 
@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/roles", tags=["roles"])
 async def create_role(
     body: RoleCreate,
     storage: BodhiStorage = Depends(get_storage),
+    user_id: str = Depends(require_auth),
 ):
     try:
         row = storage.create_role(
@@ -51,6 +52,7 @@ async def update_role(
     role_name: str,
     body: RoleUpdate,
     storage: BodhiStorage = Depends(get_storage),
+    user_id: str = Depends(require_auth),
 ):
     row = storage.update_role(role_name, **body.model_dump(exclude_unset=True))
     if not row:
@@ -62,6 +64,7 @@ async def update_role(
 async def delete_role(
     role_name: str,
     storage: BodhiStorage = Depends(get_storage),
+    user_id: str = Depends(require_auth),
 ):
     deleted = storage.delete_role(role_name)
     if not deleted:

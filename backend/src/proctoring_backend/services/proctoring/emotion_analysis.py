@@ -18,14 +18,13 @@ class EmotionAnalyzer:
 
     def __init__(self):
         logger.info("Initializing EmotionAnalyzer (Hugging Face ViT)...")
-        try:
-            # Load the pipeline for image classification
-            # This will download the model (~340MB) on first run and cache it.
-            self.classifier = pipeline("image-classification", model="trpakov/vit-face-expression", device=-1)
-            logger.info("EmotionAnalyzer ready.")
-        except Exception as e:
-            logger.error(f"Failed to load EmotionAnalyzer: {e}")
-            self.classifier = None
+        # Downloads the model (~340MB) on first run and caches it. We let load
+        # failures propagate so the app's per-model loader can mark emotion as
+        # unavailable (and /health reflects it) instead of silently disabling it.
+        self.classifier = pipeline(
+            "image-classification", model="trpakov/vit-face-expression", device=-1
+        )
+        logger.info("EmotionAnalyzer ready.")
 
     def analyze(self, frame: np.ndarray, face_bbox: Optional[Tuple[float, float, float, float]]) -> EmotionAnalysisResult:
         """

@@ -30,10 +30,36 @@ Return a JSON object matching this exact schema:
   "key_achievements": ["string  (3–5 bullet-ready achievement statements)"],
   "notable_companies": ["string"],
   "education_summary": "string  (one-line summary)",
-  "professional_summary": "string  (3–4 sentence narrative for interview context)"
+  "professional_summary": "string  (3–4 sentence narrative for interview context)",
+  "contact": {{
+    "email": "string | null",
+    "phone": "string | null",
+    "location": "string | null",
+    "linkedin": "string | null",
+    "github": "string | null",
+    "portfolio": "string | null"
+  }},
+  "work_experience": [
+    {{
+      "company": "string",
+      "title": "string",
+      "start_date": "string | null  (e.g. 'Jan 2021')",
+      "end_date": "string | null  (e.g. 'Present')",
+      "highlights": ["string  (key responsibilities / achievements)"]
+    }}
+  ],
+  "education": [
+    {{
+      "institution": "string",
+      "degree": "string",
+      "field": "string | null",
+      "graduation_year": "string | null"
+    }}
+  ],
+  "certifications": ["string"]
 }}
 
-Do not invent information. If a field cannot be determined, use null.
+Do not invent information. If a field cannot be determined, use null (or [] for lists).
 """
 
 

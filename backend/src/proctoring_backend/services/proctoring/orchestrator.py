@@ -72,13 +72,20 @@ class ProctoringOrchestrator:
             auto_flag_threshold=settings.VIOLATION_AUTO_FLAG_COUNT
         )
 
-        # Consecutive gaze deviation counter
+        # ── Debounce counters: a violation only fires after N *consecutive*
+        #    offending frames, which kills the bulk of false positives caused by
+        #    single bad frames (blink, brief turn, motion blur, ghost detection).
         self._consecutive_gaze_deviations = 0
-        self._gaze_deviation_trigger = 3
-
-        # Consecutive no-face counter
         self._consecutive_no_face = 0
-        self._no_face_trigger = 2
+        self._consecutive_not_centered = 0
+        self._consecutive_multi_person = 0
+        self._consecutive_objects: Dict[str, int] = {}  # label -> consecutive count
+
+        self._gaze_deviation_trigger = settings.GAZE_TRIGGER
+        self._no_face_trigger = settings.NO_FACE_TRIGGER
+        self._not_centered_trigger = settings.FACE_CENTER_TRIGGER
+        self._multi_person_trigger = settings.MULTI_FACE_TRIGGER
+        self._object_trigger = settings.OBJECT_TRIGGER
 
         # Rate limiting: max 1 frame per second
         self._last_processed_time = 0.0
@@ -172,7 +179,7 @@ class ProctoringOrchestrator:
     ) -> List[ViolationType]:
         violations = []
 
-        # ── Face checks ───────────────────────────────────────
+        # ── No-face (debounced) ───────────────────────────────
         if not face.has_face:
             self._consecutive_no_face += 1
             if self._consecutive_no_face >= self._no_face_trigger:
@@ -180,13 +187,25 @@ class ProctoringOrchestrator:
         else:
             self._consecutive_no_face = 0
 
-        if face.has_face and face.face_count > 1:
-            violations.append(ViolationType.MULTIPLE_FACES)
+        # ── Multiple people (debounced) ───────────────────────
+        # Either the face detector sees >1 confident face OR YOLO sees >1 person.
+        multi_person = (face.has_face and face.face_count > 1) or objects.multiple_people
+        if multi_person:
+            self._consecutive_multi_person += 1
+            if self._consecutive_multi_person >= self._multi_person_trigger:
+                violations.append(ViolationType.MULTIPLE_FACES)
+        else:
+            self._consecutive_multi_person = 0
 
+        # ── Face not centered (debounced) ─────────────────────
         if face.has_face and not face.is_centered:
-            violations.append(ViolationType.FACE_NOT_CENTERED)
+            self._consecutive_not_centered += 1
+            if self._consecutive_not_centered >= self._not_centered_trigger:
+                violations.append(ViolationType.FACE_NOT_CENTERED)
+        else:
+            self._consecutive_not_centered = 0
 
-        # ── Gaze checks ───────────────────────────────────────
+        # ── Gaze checks (debounced) ───────────────────────────
         if not gaze.is_looking_at_screen:
             self._consecutive_gaze_deviations += 1
             if self._consecutive_gaze_deviations >= self._gaze_deviation_trigger:
@@ -197,20 +216,28 @@ class ProctoringOrchestrator:
         else:
             self._consecutive_gaze_deviations = 0
 
-        # ── Object detection checks ───────────────────────────
-        if objects.multiple_people:
-            if ViolationType.MULTIPLE_FACES not in violations:
-                violations.append(ViolationType.MULTIPLE_FACES)
-
+        # ── Prohibited objects (debounced per label) ──────────
+        # A phone/book must persist for OBJECT_TRIGGER consecutive frames before
+        # flagging, so a one-frame YOLO misfire doesn't penalize the candidate.
+        seen_labels = set()
         for obj in objects.prohibited_objects:
-            violation_type_str = self._object_detector.PROHIBITED_CLASSES.get(obj.label)
+            label = obj.label
+            seen_labels.add(label)
+            self._consecutive_objects[label] = self._consecutive_objects.get(label, 0) + 1
+            if self._consecutive_objects[label] < self._object_trigger:
+                continue
+            violation_type_str = self._object_detector.PROHIBITED_CLASSES.get(label)
             if violation_type_str:
                 try:
                     vtype = ViolationType(violation_type_str)
-                    if vtype not in violations:
-                        violations.append(vtype)
                 except ValueError:
-                    violations.append(ViolationType.UNAUTHORIZED_OBJECT)
+                    vtype = ViolationType.UNAUTHORIZED_OBJECT
+                if vtype not in violations:
+                    violations.append(vtype)
+        # Reset counters for labels not present this frame.
+        for label in list(self._consecutive_objects.keys()):
+            if label not in seen_labels:
+                self._consecutive_objects.pop(label, None)
 
         return violations
 

@@ -3,7 +3,9 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Host port is configurable (API_HOST_PORT in .env) to avoid clashes with
+      # other local services. Container always listens on 8000.
+      - "${API_HOST_PORT:-8000}:8000"
     env_file:
       - .env
     environment:
@@ -12,7 +14,10 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      # Persist YOLO + DeepFace model downloads across restarts
+      # Bind-mount source for fast iteration (no image rebuild on code change;
+      # restart the container to pick changes up).
+      - ./src:/app/src
+      # Persist model downloads across restarts
       - model_cache:/root/.deepface
       - yolo_cache:/root/ultralytics
     healthcheck:

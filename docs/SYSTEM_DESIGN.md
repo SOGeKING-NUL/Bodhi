@@ -32,7 +32,7 @@ To achieve natural conversational latency:
 - Audio chunks are returned over the WebSocket and autoplayed.
 
 ### 2. LangGraph Orchestration & Tools
-The interview flow is represented as a state graph (`src/graph.py`).
+The interview flow is represented as a state graph (`backend/src/graph.py`).
 - **Nodes**: `interviewer`, `process_tools`, `compact_memory`.
 - **Tools Available to LLM**: `transition_phase`, `score_answer`, `adjust_difficulty`, `end_interview`.
 - **Phases**: `intro` → `technical` → `behavioral` → `dsa` → `project` → `wrapup`.
@@ -45,35 +45,42 @@ The system supports semantic search across documents.
 
 ### 4. Background Processing & Proctoring
 - **Proctoring**: Frontend video chunks are sent via WebSocket. A strict 1 FPS rate limit applies. Frames pass through a cascaded pipeline: MediaPipe (Face/Gaze) → YOLOv8n (Objects/Phones) → ViT (Emotion/Stress). 
-- **Report Generation**: On session end (`[END_INTERVIEW]` token detected), the backend instantly routes the frontend to a completion page while scheduling a `BackgroundTasks` run to flush Redis memories to NeonDB and invoke the Report Agent (`src/agents/report_agent.py`) for qualitative synthesis.
+- **Report Generation**: On session end (`[END_INTERVIEW]` token detected), the backend instantly routes the frontend to a completion page while scheduling a `BackgroundTasks` run to flush Redis memories to NeonDB and invoke the Report Agent (`backend/src/agents/report_agent.py`) for qualitative synthesis.
 
 ## File System Structure
 
 ```text
 Bodhi/
-├── client/                  # Next.js UI Application
-├── src/                     # Backend Source Code
-│   ├── api/                 # FastAPI routes and server logic
-│   │   ├── app.py           # Application entrypoint & CORS
-│   │   ├── interviews.py    # Session lifecycle & WebSocket handler
-│   │   ├── documents.py     # RAG ingestion endpoints
-│   │   └── ...
-│   ├── services/            # External API integrations
-│   │   ├── llm.py           # Gemini Langchain setup
-│   │   ├── stt.py           # Speech-to-Text (Saaras V3)
-│   │   └── tts.py           # Text-to-Speech (Bulbul V3)
-│   ├── graph.py             # LangGraph state machine definition
-│   ├── state.py             # TypedDict definitions and Phase configurations
-│   ├── tools.py             # LangGraph bound tools (scoring, transitioning)
-│   ├── memory.py            # Phase memory compaction and extraction
-│   ├── report.py            # Final analytical report generation
-│   ├── rag.py               # Document retrieval and pgvector queries
-│   ├── document_parser.py   # PDF and Word document text extraction
-│   ├── cache.py             # Redis connection and caching logic
-│   └── storage.py           # NeonDB connection and SQL execution
-├── .env                     # Secrets (Gemini, Sarvam, NeonDB, Redis)
-├── main.py                  # Standalone CLI voice loop entrypoint
-└── resume_parser.py         # Specialized LLM resume extraction logic
+├── client/                      # Next.js UI Application
+├── backend/                     # Deployable backend (self-contained)
+│   ├── Dockerfile               # Container build (context = backend/)
+│   ├── docker-compose.yml       # API + Redis orchestration
+│   ├── requirements.txt         # Python dependencies
+│   ├── .env                     # Secrets (Gemini, Sarvam, NeonDB, Redis)
+│   ├── .env.example             # Template for .env
+│   └── src/                     # Backend Source Code
+│       ├── api/                 # FastAPI routes and server logic
+│       │   ├── app.py           # Application entrypoint & CORS
+│       │   ├── interviews.py    # Session lifecycle & WebSocket handler
+│       │   ├── documents.py     # RAG ingestion endpoints
+│       │   └── ...
+│       ├── services/            # External API integrations
+│       │   ├── llm.py           # Gemini Langchain setup
+│       │   ├── stt.py           # Speech-to-Text (Saaras V3)
+│       │   └── tts.py           # Text-to-Speech (Bulbul V3)
+│       ├── graph.py             # LangGraph state machine definition
+│       ├── state.py             # TypedDict definitions and Phase configurations
+│       ├── tools.py             # LangGraph bound tools (scoring, transitioning)
+│       ├── memory.py            # Phase memory compaction and extraction
+│       ├── report.py            # Final analytical report generation
+│       ├── rag.py               # Document retrieval and pgvector queries
+│       ├── document_parser.py   # PDF and Word document text extraction
+│       ├── cache.py             # Redis connection and caching logic
+│       ├── storage.py           # NeonDB connection and SQL execution
+│       ├── main.py              # Standalone CLI voice loop entrypoint
+│       └── resume_parser.py     # Specialized LLM resume extraction logic
+├── Makefile                     # run / cli / dev targets
+└── docs/                        # Architecture & technical docs
 ```
 
 ## Data Flow: Interview Start & Turn Execution
