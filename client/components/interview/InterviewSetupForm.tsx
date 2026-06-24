@@ -22,6 +22,23 @@ export interface InterviewFormData {
   interviewer_persona: "bodhi" | "riya"
 }
 
+// The backend stores a richer profile (full_name, technical_skills, contact.*)
+// than this UI renders. Normalize it to the shape the form expects so a stored
+// resume displays correctly whether it came from a fresh upload or the DB.
+function normalizeProfile(raw: any): CandidateProfile {
+  const ps = raw?.professional_summary ?? raw ?? {}
+  return {
+    name: ps.full_name || ps.name || "",
+    email: ps.contact?.email ?? ps.email ?? null,
+    phone: ps.contact?.phone ?? ps.phone ?? null,
+    summary: ps.professional_summary || ps.summary || null,
+    skills: ps.technical_skills || ps.skills || [],
+    experience: ps.work_experience || ps.experience || [],
+    education: ps.education || [],
+    projects: ps.projects || [],
+  } as CandidateProfile
+}
+
 export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProps) {
   const { user } = useUser()
   const [uploading, setUploading] = useState(false)
@@ -37,6 +54,32 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
     import("@/lib/api").then(api => {
       api.listCompanies().then(setCompanies).catch(console.error)
     })
+  }, [])
+
+  // On mount, load any resume already stored in the DB so the user never has to
+  // re-upload it after a refresh.
+  useEffect(() => {
+    const loadExistingResume = async () => {
+      try {
+        const { getAuthHeaders, getResumeProfile } = await import("@/lib/api")
+        const res = await fetch("/api/users/me/status", { headers: await getAuthHeaders() })
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.has_resume && data.user_id) {
+          const raw = await getResumeProfile(data.user_id)
+          const profile = normalizeProfile(raw)
+          setUploadedProfile(profile)
+          setForm((prev) => ({
+            ...prev,
+            user_id: data.user_id,
+            candidate_name: profile.name || prev.candidate_name,
+          }))
+        }
+      } catch (err) {
+        console.log("No existing resume to preload:", err)
+      }
+    }
+    loadExistingResume()
   }, [])
 
   const [form, setForm] = useState<InterviewFormData>({
@@ -100,11 +143,12 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
 
     try {
       const result = await uploadResume(file)
-      setUploadedProfile(result.profile)
+      const profile = normalizeProfile(result.profile)
+      setUploadedProfile(profile)
       setForm((prev) => ({
         ...prev,
         user_id: result.user_id,
-        candidate_name: result.profile.name || prev.candidate_name,
+        candidate_name: profile.name || prev.candidate_name,
       }))
     } catch (err) {
       setError(String(err))
@@ -131,7 +175,7 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
 
         if (data.has_resume && data.user_id) {
           const { getResumeProfile } = await import("@/lib/api")
-          const profile = await getResumeProfile(data.user_id)
+          const profile = normalizeProfile(await getResumeProfile(data.user_id))
 
           if (profile) {
             setUploadedProfile(profile)
@@ -194,7 +238,7 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
 
           if (data.has_resume && data.user_id) {
             const { getResumeProfile } = await import("@/lib/api")
-            const profile = await getResumeProfile(data.user_id)
+            const profile = normalizeProfile(await getResumeProfile(data.user_id))
 
             if (profile) {
               // Switch to option_b mode (JD-targeted with resume)

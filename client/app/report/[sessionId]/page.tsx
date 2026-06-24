@@ -86,11 +86,48 @@ export default function ReportPage() {
 
   useEffect(() => {
     if (!sessionId) return
+
+    // The report is generated asynchronously after the interview ends (LLM
+    // scoring + embeddings take ~10-20s). The page often loads before it's
+    // ready, so poll while the endpoint returns 404 instead of failing on the
+    // first try. Any non-404 error fails immediately.
+    let cancelled = false
+    const MAX_ATTEMPTS = 40 // ~80s at 2s spacing
+    const POLL_MS = 2000
+
     setLoading(true)
-    getInterviewReport(sessionId)
-      .then(setReport)
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false))
+    setError("")
+
+    const poll = async () => {
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        if (cancelled) return
+        try {
+          const data = await getInterviewReport(sessionId)
+          if (cancelled) return
+          setReport(data)
+          setLoading(false)
+          return
+        } catch (err) {
+          const msg = String(err)
+          // 404 → report not generated yet; keep polling. Otherwise give up.
+          if (!msg.includes("404")) {
+            if (!cancelled) {
+              setError(msg)
+              setLoading(false)
+            }
+            return
+          }
+        }
+        await new Promise((r) => setTimeout(r, POLL_MS))
+      }
+      if (!cancelled) {
+        setError("Report is taking longer than expected. Please refresh in a moment.")
+        setLoading(false)
+      }
+    }
+
+    poll()
+    return () => { cancelled = true }
   }, [sessionId])
 
   const handleDownloadPDF = async () => {
@@ -126,7 +163,7 @@ export default function ReportPage() {
         <div className="flex items-center justify-center pt-40">
           <div className="text-center space-y-4 animate-pulse">
             <div className="w-16 h-16 mx-auto rounded-full bg-[rgba(55,50,47,0.08)]" />
-            <p className="text-[rgba(55,50,47,0.5)] text-sm">Loading your interview report…</p>
+            <p className="text-[rgba(55,50,47,0.5)] text-sm">Generating your interview report… this can take up to a minute.</p>
           </div>
         </div>
       </div>

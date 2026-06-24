@@ -30,8 +30,6 @@ interface Turn {
   phase?: string
 }
 
-const SILENCE_THRESHOLD = 0.015
-
 export default function InterviewPage() {
   const router = useRouter()
   const [sessionId, setSessionId] = useState("");
@@ -48,6 +46,7 @@ export default function InterviewPage() {
   const [demoMode, setDemoMode] = useState(false)
   const [demoPhase, setDemoPhase] = useState("")
   const [editorContent, setEditorContent] = useState("")
+  const [interimTranscript, setInterimTranscript] = useState("")
 
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -57,7 +56,13 @@ export default function InterviewPage() {
 
   // Custom hooks
   const audio = useInterviewAudio()
-  const proctoring = useProctoring(videoRef, canvasRef)
+  // When browser-side proctoring sees a high violation rate, ask Bodhi to
+  // verbally reassure the candidate ("take a breath, relax"). The backend
+  // rate-limits this, so firing freely here is safe.
+  const handleProctorAlert = useCallback(() => {
+    audio.sendControl({ type: "proctor_alert" })
+  }, [audio])
+  const proctoring = useProctoring(videoRef, canvasRef, handleProctorAlert)
   const sentiment = useSentimentAnalysis()
 
   useEffect(() => {
@@ -148,26 +153,6 @@ export default function InterviewPage() {
     } catch { }
   }, [])
 
-  const finishRecording = useCallback(async () => {
-    setPhase("processing")
-    phaseRef.current = "processing"
-    audio.setLevel(0)
-
-    const wavBlob = audio.getRecordedAudio()
-    if (!wavBlob) {
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), () => finishRecording())
-      return
-    }
-
-    try {
-      audio.sendAudioWs(wavBlob)
-      // Phase transitions are handled by WebSocket callbacks (onTranscript, onReplyComplete)
-    } catch (err) {
-      setError(String(err))
-      audio.startListening(() => setPhase("listening"), () => setPhase("recording"), () => finishRecording())
-    }
-  }, [audio])
-
   const handleFormSubmit = async (data: InterviewFormData, isDemoMode = false, demoPhase = "") => {
     setFormData(data)
     setError("")
@@ -203,7 +188,11 @@ export default function InterviewPage() {
            // Phase transitions to speaking happen during onPlaybackStart now
         },
         onTranscript: (text) => {
+           setInterimTranscript("")
            setTranscript((prev) => [...prev, { speaker: "user", text }])
+        },
+        onInterimTranscript: (text) => {
+           setInterimTranscript(text)
         },
         onPartialReply: (chunk) => {
            setTranscript((prev) => {
@@ -256,14 +245,13 @@ export default function InterviewPage() {
            setPhase("idle")
         },
         onPlaybackStart: () => {
+           setInterimTranscript("")
            setPhase("speaking")
         },
         onPlaybackComplete: () => {
-           audio.startListening(
-               () => setPhase("listening"),
-               () => setPhase("recording"),
-               finishRecording
-           )
+           // Server-side (Deepgram) endpointing decides turns now; we just
+           // resume listening and let continuous PCM streaming flow.
+           audio.startListening(() => setPhase("listening"))
         }
       })
 
@@ -443,6 +431,8 @@ export default function InterviewPage() {
         interviewerPersona={formData?.interviewer_persona ?? "bodhi"}
         onEditorContentChange={setEditorContent}
         interviewPhase={interviewPhase}
+        isUserSpeaking={audio.isUserSpeaking}
+        interimTranscript={interimTranscript}
       />
     </>
   )

@@ -1,0 +1,61 @@
+# Server-only requirements (no mic/speaker hardware needed)
+# Use this for production deployments (Vultr, Docker, etc.)
+# For local CLI voice loop: install requirements.txt instead
+
+# LLM + orchestration
+sarvamai>=0.1.0
+langchain>=0.3.0
+langchain-google-genai>=2.0.0
+langgraph>=0.2.0
+# Durable interview state (PostgresSaver). Falls back to in-memory if absent.
+langgraph-checkpoint-postgres>=2.0.0
+psycopg[binary,pool]>=3.1.0
+python-dotenv>=1.0.0
+
+# Live voice pipeline: Deepgram streaming STT + Sarvam linear16 TTS WebSockets
+websockets>=12.0
+
+# Audio processing (needed by STT service for audio chunking)
+soundfile>=0.12.1
+numpy>=1.24.0
+
+# Storage
+psycopg2-binary>=2.9.0
+redis>=5.0.0
+pgvector>=0.3.0
+
+# FastAPI server + document parsing
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+gunicorn>=22.0.0
+python-multipart>=0.0.9
+PyPDF2>=3.0.0
+python-docx>=1.1.0
+
+# Proctoring: CV models
+opencv-python>=4.8.0
+
+# Behavioral analysis: HuggingFace models + audio features + pose
+transformers>=4.40.0
+torch>=2.2.0
+torchvision>=0.17.0
+huggingface-hub>=0.20.0
+sentencepiece>=0.2.0
+librosa>=0.10.0
+mediapipe>=0.10.0
+
+# Rate limiting
+slowapi>=0.1.9
+
+# Clerk JWT verification
+pyjwt[crypto]>=2.8.0
+# deepface and tf-keras require TensorFlow, which is not available for Python 3.14+.
+# These are only installed on Python versions that are supported by TensorFlow.
+deepface>=0.0.79; python_version < "3.14"
+pydantic-settings>=2.0.0
+loguru>=0.7.0
+ultralytics>=8.0.0
+tf-keras>=2.16.0; python_version < "3.14"
+
+# PDF generation
+reportlab>=4.0.0
