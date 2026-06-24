@@ -1,153 +1,137 @@
-"use client"
+"use client";
 
-import Link from "next/link"
-import { usePathname } from "next/navigation"
-import { useAuth } from "@clerk/nextjs"
-import { SignInButton, useUser } from "@clerk/nextjs"
+import { SignInButton } from "@clerk/nextjs";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useState, useEffect } from "react";
 
 export default function Navbar() {
-  const { isSignedIn } = useAuth()
-  const { user } = useUser()
-  const pathname = usePathname()
+  const pathname = usePathname();
+  const [scrolled, setScrolled] = useState(false);
 
-  const navLinks = [
-    { href: "/interview", label: "Interview" },
-    { href: "/companies", label: "Companies" },
-    { href: "/roles", label: "Roles" },
-    { href: "/resumes", label: "Resumes" },
-  ]
+  useEffect(() => {
+    const handleScroll = () => setScrolled(window.scrollY > 20);
+    window.addEventListener("scroll", handleScroll);
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
-  const isActive = (href: string) => pathname === href
+  const landingLinks = [
+    { href: "#platform", label: "Platform" },
+    { href: "#agents", label: "Interviews" },
+    { href: "#workflow", label: "Workflow" },
+    { href: "#pricing", label: "Pricing" },
+  ];
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 flex justify-center items-center px-4 py-4 animate-fade-in-up">
-      {/* Enhanced glassmorphism container */}
-      <div 
-        className="relative w-full max-w-[900px] h-14 py-2 px-5 overflow-hidden rounded-[50px] flex justify-between items-center transition-all duration-300 group"
-        style={{
-          background: "rgba(255, 255, 255, 0.75)",
-          backdropFilter: "blur(20px) saturate(180%)",
-          WebkitBackdropFilter: "blur(20px) saturate(180%)",
-          border: "1px solid rgba(255, 255, 255, 0.5)",
-          boxShadow: "0 0 0 1px rgba(255, 255, 255, 0.8) inset, 0 4px 12px rgba(0, 0, 0, 0.08), 0 8px 32px rgba(0, 0, 0, 0.04)",
-        }}
-      >
-        {/* Subtle gradient overlay */}
-        <div 
-          className="absolute inset-0 opacity-50 pointer-events-none"
+    <>
+      <div className="fixed top-0 left-0 right-0 h-[10px] bg-white z-50 transition-all duration-500" />
+      <nav className="fixed top-[10px] left-0 right-0 flex justify-center items-start px-4 transition-all duration-500 z-50">
+        <div
+          className="relative w-full max-w-[960px] h-[56px] px-8 flex justify-between items-center transition-all duration-500 shadow-[0_8px_32px_rgba(0,0,0,0.06)] rounded-b-2xl border-b border-black/[0.08] border-l border-r"
           style={{
-            background: "linear-gradient(135deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0) 50%, rgba(255, 255, 255, 0.2) 100%)",
+            background: scrolled
+              ? "rgba(255, 255, 255, 0.95)"
+              : "rgba(255, 255, 255, 0.8)",
+            backdropFilter: "blur(24px) saturate(180%)",
+            WebkitBackdropFilter: "blur(24px) saturate(180%)",
           }}
-        />
-        
-        {/* Shimmer effect on hover */}
-        <div 
-          className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"
-          style={{
-            background: "linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.3) 50%, transparent 100%)",
-            transform: "translateX(-100%)",
-            animation: "shimmer 3s infinite",
-          }}
-        />
-
-        {/* Content */}
-        <div className="relative z-10 flex items-center justify-between w-full">
-          {/* Logo */}
-          <Link
-            href="/"
-            className="text-[#2F3037] text-xl font-bold font-sans tracking-tight hover:opacity-80 transition-all duration-200 hover:scale-105 shrink-0"
-            style={{ fontFamily: "var(--font-inter), ui-sans-serif, sans-serif" }}
+        >
+          {/* Left Flange (Outward Top Corner) */}
+          <div
+            className="absolute top-[0px] left-[-16px] w-[16px] h-[16px] pointer-events-none"
+            style={{
+              background: scrolled
+                ? "rgba(255, 255, 255, 0.95)"
+                : "rgba(255, 255, 255, 0.8)",
+              backdropFilter: "blur(24px) saturate(180%)",
+              WebkitBackdropFilter: "blur(24px) saturate(180%)",
+              maskImage:
+                "radial-gradient(circle at 0% 100%, transparent 16px, black 16.5px)",
+              WebkitMaskImage:
+                "radial-gradient(circle at 0% 100%, transparent 16px, black 16.5px)",
+            }}
           >
-            Bodhi
-          </Link>
+            <svg
+              className="absolute inset-0 w-full h-full"
+              viewBox="0 0 16 16"
+              preserveAspectRatio="none"
+            >
+              <path
+                d="M0 0 C 0 8.836 7.163 16 16 16"
+                fill="none"
+                stroke="rgba(0,0,0,0.08)"
+                strokeWidth="1"
+              />
+            </svg>
+          </div>
 
-          {/* Navigation Links - Hidden on mobile, shown on tablet+ */}
-          {isSignedIn && (
-            <div className="hidden md:flex items-center gap-1 mx-4">
-              {navLinks.map((link) => (
+          {/* Right Flange (Outward Top Corner) */}
+          <div
+            className="absolute top-[0px] right-[-16px] w-[16px] h-[16px] pointer-events-none"
+            style={{
+              background: scrolled
+                ? "rgba(255, 255, 255, 0.95)"
+                : "rgba(255, 255, 255, 0.8)",
+              backdropFilter: "blur(24px) saturate(180%)",
+              WebkitBackdropFilter: "blur(24px) saturate(180%)",
+              maskImage:
+                "radial-gradient(circle at 100% 100%, transparent 16px, black 16.5px)",
+              WebkitMaskImage:
+                "radial-gradient(circle at 100% 100%, transparent 16px, black 16.5px)",
+            }}
+          >
+            <svg
+              className="absolute inset-0 w-full h-full"
+              viewBox="0 0 16 16"
+              preserveAspectRatio="none"
+            >
+              <path
+                d="M16 0 C 16 8.836 8.837 16 0 16"
+                fill="none"
+                stroke="rgba(0,0,0,0.08)"
+                strokeWidth="1"
+              />
+            </svg>
+          </div>
+
+          <div className="relative z-10 flex items-center justify-between w-full">
+            {/* Logo */}
+            <Link
+              href="/"
+              className="text-[#0a0a0a] text-[15px] font-bold tracking-[0.25em] hover:opacity-70 transition-opacity duration-200 shrink-0 uppercase"
+              style={{ fontFamily: "'Inter', sans-serif" }}
+            >
+              BODHI
+            </Link>
+
+            {/* Links */}
+            <div className="hidden md:flex items-center gap-6">
+              {landingLinks.map((link) => (
                 <Link
                   key={link.href}
                   href={link.href}
-                  className={`px-4 py-1.5 rounded-full text-[13px] font-medium transition-all duration-200 ${
-                    isActive(link.href)
-                      ? "bg-[rgba(55,50,47,0.12)] text-[#37322F] shadow-sm"
-                      : "text-[rgba(55,50,47,0.65)] hover:text-[#37322F] hover:bg-[rgba(55,50,47,0.06)]"
-                  }`}
+                  className="text-[13px] font-medium transition-colors duration-200 text-[#0a0a0a]/60 hover:text-[#0a0a0a]"
+                  style={{ fontFamily: "'Inter', sans-serif" }}
                 >
                   {link.label}
                 </Link>
               ))}
             </div>
-          )}
 
-          {/* Right side */}
-          <div className="flex items-center gap-3 shrink-0">
-            {isSignedIn ? (
-              <div className="flex items-center gap-2">
-                {/* Mobile menu button */}
-                <div className="md:hidden relative group/menu">
-                  <button className="px-3 py-1.5 text-[rgba(55,50,47,0.65)] hover:text-[#37322F] text-sm font-medium transition-all duration-200 hover:bg-[rgba(55,50,47,0.06)] rounded-full">
-                    Menu
-                  </button>
-                  {/* Dropdown with enhanced glassmorphism */}
-                  <div 
-                    className="absolute right-0 top-full mt-2 w-48 rounded-2xl opacity-0 invisible group-hover/menu:opacity-100 group-hover/menu:visible transition-all duration-200 overflow-hidden"
-                    style={{
-                      background: "rgba(255, 255, 255, 0.85)",
-                      backdropFilter: "blur(20px) saturate(180%)",
-                      WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                      border: "1px solid rgba(255, 255, 255, 0.5)",
-                      boxShadow: "0 4px 16px rgba(0, 0, 0, 0.12), 0 8px 32px rgba(0, 0, 0, 0.08)",
-                    }}
-                  >
-                    {navLinks.map((link) => (
-                      <Link
-                        key={link.href}
-                        href={link.href}
-                        className={`block px-4 py-2.5 text-sm font-medium transition-colors ${
-                          isActive(link.href)
-                            ? "bg-[rgba(55,50,47,0.08)] text-[#37322F]"
-                            : "text-[rgba(55,50,47,0.65)] hover:text-[#37322F] hover:bg-[rgba(55,50,47,0.04)]"
-                        }`}
-                      >
-                        {link.label}
-                      </Link>
-                    ))}
-                  </div>
-                </div>
-                <Link href="/profile" className="flex items-center justify-center w-8 h-8 rounded-full bg-[rgba(55,50,47,0.1)] shadow-inner border border-white hover:shadow-md hover:scale-105 transition-all duration-200 overflow-hidden shrink-0">
-                  {user?.imageUrl ? (
-                    <img src={user.imageUrl} alt="Profile" className="w-full h-full object-cover" />
-                  ) : (
-                    <span className="text-[10px] text-[rgba(55,50,47,0.6)] font-bold uppercase">
-                      {user?.firstName?.charAt(0) || user?.emailAddresses?.[0]?.emailAddress?.charAt(0) || "?"}
-                    </span>
-                  )}
-                </Link>
-              </div>
-            ) : (
+            {/* CTA Button */}
+            <div className="flex items-center gap-2 shrink-0">
               <SignInButton mode="modal">
-                <button className="px-[14px] py-[6px] bg-white shadow-[0px_1px_2px_rgba(55,50,47,0.12)] overflow-hidden rounded-full flex justify-center items-center cursor-pointer transition-all duration-200 hover:shadow-[0px_2px_4px_rgba(55,50,47,0.16)] hover:scale-105 active:scale-95">
-                  <span className="text-[#37322F] text-[13px] font-medium leading-5 font-sans">
-                    Log in
-                  </span>
-                </button>
+                <div
+                  className="h-[34px] px-5 flex items-center justify-center border border-[#0a0a0a]/20 text-[#0a0a0a] text-[11px] uppercase tracking-[0.05em] font-medium rounded-full transition-all duration-300 hover:border-[#0a0a0a]/40 hover:bg-black/[0.02] active:scale-95 cursor-pointer"
+                  style={{ fontFamily: "var(--font-inter)" }}
+                >
+                  START PRACTICING
+                </div>
               </SignInButton>
-            )}
+            </div>
           </div>
         </div>
-      </div>
-
-      <style jsx>{`
-        @keyframes shimmer {
-          0% {
-            transform: translateX(-100%);
-          }
-          100% {
-            transform: translateX(100%);
-          }
-        }
-      `}</style>
-    </nav>
-  )
+      </nav>
+    </>
+  );
 }
