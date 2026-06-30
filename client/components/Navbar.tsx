@@ -1,13 +1,30 @@
 "use client";
 
-import { SignInButton } from "@clerk/nextjs";
+import { SignInButton, UserButton, useAuth } from "@clerk/nextjs";
+import { Menu, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 
+const LANDING_LINKS = [
+  { href: "/#platform", label: "Platform" },
+  { href: "/#agents", label: "Interviews" },
+  { href: "/#workflow", label: "Workflow" },
+  { href: "/#pricing", label: "Pricing" },
+];
+
+const APP_LINKS = [
+  { href: "/interview", label: "Interview" },
+  { href: "/companies", label: "Companies" },
+  { href: "/roles", label: "Roles" },
+  { href: "/resumes", label: "Resumes" },
+];
+
 export default function Navbar() {
+  const { isSignedIn } = useAuth();
   const pathname = usePathname();
   const [scrolled, setScrolled] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 20);
@@ -15,12 +32,15 @@ export default function Navbar() {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  const landingLinks = [
-    { href: "#platform", label: "Platform" },
-    { href: "#agents", label: "Interviews" },
-    { href: "#workflow", label: "Workflow" },
-    { href: "#pricing", label: "Pricing" },
-  ];
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
+
+  const isLanding = pathname === "/";
+  const links = isLanding ? LANDING_LINKS : APP_LINKS;
+
+  const isActive = (href: string) =>
+    !isLanding && (pathname === href || pathname.startsWith(`${href}/`));
 
   return (
     <>
@@ -36,7 +56,6 @@ export default function Navbar() {
             WebkitBackdropFilter: "blur(24px) saturate(180%)",
           }}
         >
-          {/* Left Flange (Outward Top Corner) */}
           <div
             className="absolute top-[0px] left-[-16px] w-[16px] h-[16px] pointer-events-none"
             style={{
@@ -65,7 +84,6 @@ export default function Navbar() {
             </svg>
           </div>
 
-          {/* Right Flange (Outward Top Corner) */}
           <div
             className="absolute top-[0px] right-[-16px] w-[16px] h-[16px] pointer-events-none"
             style={{
@@ -95,7 +113,6 @@ export default function Navbar() {
           </div>
 
           <div className="relative z-10 flex items-center justify-between w-full">
-            {/* Logo */}
             <Link
               href="/"
               className="text-[#0a0a0a] text-[15px] font-bold tracking-[0.25em] hover:opacity-70 transition-opacity duration-200 shrink-0 uppercase"
@@ -104,13 +121,16 @@ export default function Navbar() {
               BODHI
             </Link>
 
-            {/* Links */}
             <div className="hidden md:flex items-center gap-6">
-              {landingLinks.map((link) => (
+              {links.map((link) => (
                 <Link
                   key={link.href}
                   href={link.href}
-                  className="text-[13px] font-medium transition-colors duration-200 text-[#0a0a0a]/60 hover:text-[#0a0a0a]"
+                  className={`text-[13px] font-medium transition-colors duration-200 ${
+                    isActive(link.href)
+                      ? "text-[#0a0a0a]"
+                      : "text-[#0a0a0a]/60 hover:text-[#0a0a0a]"
+                  }`}
                   style={{ fontFamily: "'Inter', sans-serif" }}
                 >
                   {link.label}
@@ -118,18 +138,83 @@ export default function Navbar() {
               ))}
             </div>
 
-            {/* CTA Button */}
-            <div className="flex items-center gap-2 shrink-0">
-              <SignInButton mode="modal">
-                <div
-                  className="h-[34px] px-5 flex items-center justify-center border border-[#0a0a0a]/20 text-[#0a0a0a] text-[11px] uppercase tracking-[0.05em] font-medium rounded-full transition-all duration-300 hover:border-[#0a0a0a]/40 hover:bg-black/[0.02] active:scale-95 cursor-pointer"
-                  style={{ fontFamily: "var(--font-inter)" }}
-                >
-                  START PRACTICING
-                </div>
-              </SignInButton>
+            <div className="flex items-center gap-3 shrink-0">
+              {isSignedIn ? (
+                <>
+                  {isLanding && (
+                    <Link
+                      href="/interview"
+                      className="h-[34px] px-5 hidden sm:flex items-center justify-center border border-[#0a0a0a]/20 text-[#0a0a0a] text-[11px] uppercase tracking-[0.05em] font-medium rounded-full transition-all duration-300 hover:border-[#0a0a0a]/40 hover:bg-black/[0.02] active:scale-95"
+                      style={{ fontFamily: "var(--font-inter)" }}
+                    >
+                      START PRACTICING
+                    </Link>
+                  )}
+                  <UserButton
+                    appearance={{ elements: { avatarBox: "w-8 h-8" } }}
+                  />
+                </>
+              ) : (
+                <SignInButton mode="modal">
+                  <div
+                    className="h-[34px] px-5 hidden sm:flex items-center justify-center border border-[#0a0a0a]/20 text-[#0a0a0a] text-[11px] uppercase tracking-[0.05em] font-medium rounded-full transition-all duration-300 hover:border-[#0a0a0a]/40 hover:bg-black/[0.02] active:scale-95 cursor-pointer"
+                    style={{ fontFamily: "var(--font-inter)" }}
+                  >
+                    START PRACTICING
+                  </div>
+                </SignInButton>
+              )}
+
+              <button
+                type="button"
+                aria-label="Toggle navigation menu"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen((open) => !open)}
+                className="md:hidden w-9 h-9 flex items-center justify-center rounded-full text-[#0a0a0a] hover:bg-black/[0.04] transition-colors duration-200"
+              >
+                {menuOpen ? <X size={18} /> : <Menu size={18} />}
+              </button>
             </div>
           </div>
+
+          {menuOpen && (
+            <div
+              className="md:hidden fixed inset-0 -z-10"
+              aria-hidden
+              onClick={() => setMenuOpen(false)}
+            />
+          )}
+
+          {menuOpen && (
+            <div className="md:hidden absolute top-[calc(100%+8px)] left-0 right-0 rounded-2xl border border-black/[0.08] bg-white/95 backdrop-blur-xl shadow-[0_12px_40px_rgba(0,0,0,0.12)] p-2 flex flex-col">
+              {links.map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  onClick={() => setMenuOpen(false)}
+                  className={`px-4 py-3 rounded-xl text-[14px] font-medium transition-colors duration-200 ${
+                    isActive(link.href)
+                      ? "bg-black/[0.04] text-[#0a0a0a]"
+                      : "text-[#0a0a0a]/70 hover:bg-black/[0.03] hover:text-[#0a0a0a]"
+                  }`}
+                  style={{ fontFamily: "'Inter', sans-serif" }}
+                >
+                  {link.label}
+                </Link>
+              ))}
+
+              {isSignedIn && isLanding && (
+                <Link
+                  href="/interview"
+                  onClick={() => setMenuOpen(false)}
+                  className="mt-1 px-4 py-3 rounded-xl text-[14px] font-medium text-[#0a0a0a] bg-black/[0.04] hover:bg-black/[0.06] transition-colors duration-200"
+                  style={{ fontFamily: "'Inter', sans-serif" }}
+                >
+                  Start practicing
+                </Link>
+              )}
+            </div>
+          )}
         </div>
       </nav>
     </>

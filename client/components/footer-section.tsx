@@ -4,26 +4,17 @@ import Link from "next/link";
 
 export default function FooterSection() {
   const centerLinks = [
-    { label: "Platform", href: "#" },
-    { label: "Interviews", href: "#" },
-    { label: "Feedback", href: "#" },
-    { label: "Resources", href: "#" },
+    { label: "Platform", href: "#platform" },
+    { label: "Interviews", href: "#agents" },
+    { label: "Workflow", href: "#workflow" },
     { label: "Live Practice", href: "#live" },
     { label: "Pricing", href: "#pricing" },
   ];
 
-  const rightLinks = [
-    { label: "Privacy", href: "#" },
-    { label: "Terms", href: "#" },
-    { label: "Docs", href: "#" },
-    { label: "Help", href: "#" },
-  ];
-
   return (
-    <footer className="w-full px-4 md:px-12 py-12 bg-[#F7F5F3]">
+    <footer className="w-full px-4 md:px-12 py-12">
       <div className="max-w-[1200px] mx-auto">
         <div className="flex flex-col md:flex-row items-center justify-between gap-8 mb-16">
-          {/* Logo */}
           <div className="w-full md:w-auto flex justify-center md:justify-start">
             <Link
               href="/"
@@ -34,8 +25,7 @@ export default function FooterSection() {
             </Link>
           </div>
 
-          {/* Center Links */}
-          <div className="w-full md:flex-1 flex justify-center">
+          <div className="w-full md:flex-1 flex justify-center md:justify-end">
             <ul className="flex flex-wrap justify-center gap-6 md:gap-8">
               {centerLinks.map((link) => (
                 <li key={link.label}>
@@ -50,26 +40,8 @@ export default function FooterSection() {
               ))}
             </ul>
           </div>
-
-          {/* Right Links */}
-          <div className="w-full md:w-auto flex justify-center md:justify-end">
-            <ul className="flex flex-wrap justify-center gap-6">
-              {rightLinks.map((link) => (
-                <li key={link.label}>
-                  <Link
-                    href={link.href}
-                    className="text-[#0a0a0a]/30 text-[12px] font-medium hover:text-[#0a0a0a]/60 transition-colors duration-200"
-                    style={{ fontFamily: "'Inter', sans-serif" }}
-                  >
-                    {link.label}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
         </div>
 
-        {/* Copyright */}
         <div className="flex justify-center md:justify-start">
           <div
             className="text-[#0a0a0a]/30 text-[11px] font-medium"

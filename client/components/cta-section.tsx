@@ -1,10 +1,12 @@
 "use client";
 
+import { SignInButton, useAuth } from "@clerk/nextjs";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 export default function CTASection() {
+  const { isSignedIn } = useAuth();
   const [isVisible, setIsVisible] = useState(false);
-  const [email, setEmail] = useState("");
   const sectionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -21,7 +23,7 @@ export default function CTASection() {
   return (
     <section
       ref={sectionRef}
-      className="w-full py-24 md:py-32 px-4 md:px-8 border-b border-black/[0.04] bg-[#F7F5F3]"
+      className="w-full py-24 md:py-32 px-4 md:px-8 border-b border-black/4"
     >
       <div className="max-w-4xl mx-auto relative z-10">
         <div
@@ -45,25 +47,32 @@ export default function CTASection() {
             className="text-[#0a0a0a]/40 text-sm md:text-[15px] leading-relaxed max-w-lg mx-auto mb-10 font-medium"
             style={{ fontFamily: "'Inter', sans-serif" }}
           >
-            Join thousands of candidates landing their dream roles with
-            AI-powered interview prep that works around the clock.
+            Upload your resume, pick a role, and run your first AI-powered mock
+            interview in minutes — with feedback that works around the clock.
           </p>
 
-          <div className="flex items-center justify-center gap-2 max-w-[420px] mx-auto">
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="your@email.com"
-              className="flex-1 h-[46px] px-5 rounded-md border border-black/[0.08] bg-white text-[13px] text-[#0a0a0a] placeholder:text-[#0a0a0a]/30 focus:outline-none focus:border-black/[0.15] focus:shadow-[0_0_0_3px_rgba(0,0,0,0.03)] transition-all duration-200"
-              style={{ fontFamily: "'Inter', sans-serif", borderRadius: "8px" }}
-            />
-            <button
-              className="h-[46px] px-8 bg-[#0a0a0a] text-white text-[12px] uppercase tracking-[0.05em] font-semibold rounded-md transition-all duration-300 hover:bg-[#1a1a1a] hover:shadow-[0_4px_12px_rgba(0,0,0,0.15)] active:scale-[0.98] shrink-0"
-              style={{ fontFamily: "'Inter', sans-serif", borderRadius: "8px" }}
-            >
-              JOIN
-            </button>
+          <div className="flex items-center justify-center">
+            {isSignedIn ? (
+              <Link
+                href="/interview"
+                className="h-[46px] px-8 flex items-center bg-[#0a0a0a] text-white text-[12px] uppercase tracking-[0.05em] font-semibold rounded-md transition-all duration-300 hover:bg-[#1a1a1a] hover:shadow-[0_4px_12px_rgba(0,0,0,0.15)] active:scale-[0.98]"
+                style={{ fontFamily: "'Inter', sans-serif", borderRadius: "8px" }}
+              >
+                Start an interview
+              </Link>
+            ) : (
+              <SignInButton mode="modal">
+                <button
+                  className="h-[46px] px-8 bg-[#0a0a0a] text-white text-[12px] uppercase tracking-[0.05em] font-semibold rounded-md transition-all duration-300 hover:bg-[#1a1a1a] hover:shadow-[0_4px_12px_rgba(0,0,0,0.15)] active:scale-[0.98]"
+                  style={{
+                    fontFamily: "'Inter', sans-serif",
+                    borderRadius: "8px",
+                  }}
+                >
+                  Start practicing free
+                </button>
+              </SignInButton>
+            )}
           </div>
         </div>
       </div>

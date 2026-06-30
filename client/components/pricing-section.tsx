@@ -19,49 +19,47 @@ export default function PricingSection() {
 
   const plans = [
     {
-      name: "Sandbox",
-      subtitle: "Start experimenting",
+      name: "Starter",
+      subtitle: "Try it out",
       price: "Free",
       priceSuffix: "",
       cta: "Get started",
       featured: false,
       features: [
-        "5 mock interviews/mo",
-        "Basic feedback",
-        "Community support",
-        "Standard roles",
+        "5 mock interviews / mo",
+        "Voice & text interviews",
+        "Resume-tailored questions",
+        "Basic scorecard",
       ],
     },
     {
-      name: "Builder",
+      name: "Pro",
       subtitle: "For serious prep",
-      price: "$49",
+      price: "$19",
       priceSuffix: "/mo",
       cta: "Start practicing",
       featured: true,
       features: [
-        "50 mock interviews/mo",
-        "Advanced analytics + replay",
-        "Priority support",
-        "Custom job descriptions",
-        "Resume parser integration",
-        "REST API access",
+        "50 mock interviews / mo",
+        "Full phase-by-phase scorecards",
+        "Behavioral & proctoring insights",
+        "Custom company & job description",
+        "Downloadable PDF reports",
+        "Progress tracking across sessions",
       ],
     },
     {
-      name: "Enterprise",
-      subtitle: "For hiring teams",
+      name: "Teams",
+      subtitle: "For bootcamps & coaches",
       price: "Custom",
       priceSuffix: "",
-      cta: "Contact sales",
+      cta: "Contact us",
       featured: false,
       features: [
         "Unlimited interviews",
-        "Custom company branding",
-        "Dedicated infra",
-        "SOC 2 / HIPAA",
-        "SLA guarantees",
-        "Candidate tracking",
+        "Custom roles & companies",
+        "Shared candidate reports",
+        "Priority support",
       ],
     },
   ];
@@ -75,7 +73,7 @@ export default function PricingSection() {
       <div className="max-w-5xl mx-auto">
         <div className="text-center mb-16 md:mb-20">
           <div
-            className="inline-flex items-center gap-2 px-4 py-1.5 bg-white/80 rounded-full border border-black/[0.06] mb-6 text-[11px] font-medium uppercase tracking-[0.1em] text-[#0a0a0a]/60"
+            className="inline-flex items-center gap-2 px-4 py-1.5 bg-white/80 rounded-full border border-black/6 mb-6 text-[11px] font-medium uppercase tracking-widest text-[#0a0a0a]/60"
             style={{ fontFamily: "var(--font-inter)" }}
           >
             <div className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
@@ -103,7 +101,7 @@ export default function PricingSection() {
               className={`relative rounded-2xl p-7 md:p-8 transition-all duration-500 ${
                 plan.featured
                   ? "bg-[#0a0a0a] text-white shadow-[0_24px_64px_rgba(0,0,0,0.2)]"
-                  : "bg-white border border-black/[0.06] hover:shadow-[0_16px_48px_rgba(0,0,0,0.06)] hover:border-black/[0.1]"
+                  : "bg-white border border-black/6 hover:shadow-[0_16px_48px_rgba(0,0,0,0.06)] hover:border-black/10"
               }`}
               style={{
                 opacity: isVisible ? 1 : 0,
@@ -113,7 +111,7 @@ export default function PricingSection() {
             >
               <div className="mb-8">
                 <div
-                  className={`text-[11px] font-medium uppercase tracking-[0.1em] mb-1 ${
+                  className={`text-[11px] font-medium uppercase tracking-widest mb-1 ${
                     plan.featured ? "text-white/40" : "text-[#0a0a0a]/35"
                   }`}
                   style={{ fontFamily: "var(--font-inter)" }}

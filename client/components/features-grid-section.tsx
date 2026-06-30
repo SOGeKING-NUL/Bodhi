@@ -4,27 +4,27 @@ import { useEffect, useRef, useState } from "react";
 
 const features = [
   {
-    title: "Custom Tailored Prep",
+    title: "Voice-first mock interviews",
     description:
-      "Select your exact target company and role. Bodhi organically configures the mock scenarios to match real interview formats and expectations. Prep smarter, not harder.",
+      "Speak naturally with an AI interviewer that listens, asks dynamic follow-ups, and adapts difficulty in real time — tailored to your target company and role. It feels like the real thing.",
     large: true,
   },
   {
-    title: "Actionable Feedback",
+    title: "Detailed scorecard",
     description:
-      "Receive detailed rubrics. Debug your delivery with full execution history and live insights.",
+      "Get a phase-by-phase breakdown scored on accuracy, depth, communication, and confidence — plus strengths, fixes, and a downloadable PDF report.",
     large: false,
   },
   {
-    title: "Progress Tracking",
+    title: "Behavioral insights",
     description:
-      "Persistent long-term memory across sessions. Bodhi learns from every interaction to target your weak spots.",
+      "Live analysis of your confidence, speaking pace, and filler words, with posture and gaze proctoring that flags what to tighten before the real interview.",
     large: false,
   },
   {
-    title: "Industry Standards",
+    title: "Track your progress",
     description:
-      "Graded against top-tier tech rubrics. Feel confident you cross the hiring bar before the real thing.",
+      "Every session is saved to your history with scores and feedback, so you can see exactly where you're improving and what still needs work.",
     large: false,
   },
 ];
@@ -75,7 +75,6 @@ export default function FeaturesGridSection() {
         </div>
 
         <div className="space-y-4 md:space-y-5">
-          {/* Large featured card */}
           <div
             className="group relative overflow-hidden rounded-2xl bg-white border border-black/[0.06] p-8 md:p-12 transition-all duration-500 hover:shadow-[0_16px_48px_rgba(0,0,0,0.06)] hover:border-black/[0.1] min-h-[280px] cursor-default"
             style={{
@@ -114,7 +113,6 @@ export default function FeaturesGridSection() {
             </div>
           </div>
 
-          {/* 3-column grid */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-5">
             {features.slice(1).map((feature, index) => (
               <div

@@ -109,7 +109,7 @@ function PixelAvatar() {
 }
 
 export default function MarqueeSection() {
-  const [isVisible, setIsVisible] = useState(false);
+  const [, setIsVisible] = useState(false);
   const sectionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -127,16 +127,14 @@ export default function MarqueeSection() {
     <section
       id="live"
       ref={sectionRef}
-      className="w-full pt-16 pb-24 md:pb-32 bg-[#F7F5F3]"
+      className="w-full pt-16 pb-24 md:pb-32"
     >
       <div className="mb-12 md:mb-16 flex justify-center">
         <div className="flex flex-col items-center gap-4">
-          {/* Pixel Avatar */}
           <div className="animate-pulse">
             <PixelAvatar />
           </div>
 
-          {/* Live Badge */}
           <div
             className="px-5 py-2 bg-[#EBE9E8] rounded-full text-[11px] font-semibold tracking-[0.06em] text-[#0a0a0a]/50 uppercase"
             style={{ fontFamily: "'Inter', sans-serif" }}

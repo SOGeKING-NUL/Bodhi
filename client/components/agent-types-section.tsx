@@ -4,44 +4,36 @@ import { useEffect, useRef, useState } from "react";
 
 const agents = [
   {
-    label: "BEHAVIORAL COACH",
+    label: "BEHAVIORAL",
     title: "Soft skills & culture fit",
     description:
-      "Evaluates your answers using the STAR method, assesses leadership qualities, and provides constructive feedback on communication.",
-    stats: { volume: "2.4M", accuracy: "99.2%" },
+      "Answer competency questions out loud and get scored on the STAR method, leadership signals, and clarity of communication.",
+    tags: ["STAR method", "Leadership", "Communication"],
     gradient: "from-blue-100/60 to-indigo-100/40",
-    iconBg: "bg-blue-500/10",
-    iconColor: "text-blue-600",
   },
   {
-    label: "SYSTEM DESIGNER",
-    title: "Architecture & scalability",
-    description:
-      "Presents complex system design problems, asks clarifying questions, and analyzes your tradeoffs in distributed systems.",
-    stats: { volume: "1.8M", accuracy: "98.7%" },
-    gradient: "from-violet-100/60 to-purple-100/40",
-    iconBg: "bg-violet-500/10",
-    iconColor: "text-violet-600",
-  },
-  {
-    label: "CODE REVIEWER",
+    label: "CODING",
     title: "Algorithms & data structures",
     description:
-      "Tests your problem-solving skills across 40+ languages. Points out edge cases, time/space complexity, and syntax errors.",
-    stats: { volume: "3.1M", accuracy: "99.5%" },
+      "Talk through problem-solving with dynamic follow-ups on edge cases, time and space complexity, and your reasoning.",
+    tags: ["Data structures", "Complexity", "Edge cases"],
     gradient: "from-emerald-100/60 to-teal-100/40",
-    iconBg: "bg-emerald-500/10",
-    iconColor: "text-emerald-600",
   },
   {
-    label: "NEGOTIATOR",
-    title: "Offer & compensation",
+    label: "SYSTEM DESIGN",
+    title: "Architecture & scalability",
     description:
-      "Simulates back-and-forth offer negotiations. Helps you practice framing your value and finding leverage confidently.",
-    stats: { volume: "4.2M", accuracy: "99.8%" },
+      "Work through open-ended design prompts while the interviewer probes your tradeoffs across distributed systems.",
+    tags: ["Scalability", "Tradeoffs", "Distributed systems"],
+    gradient: "from-violet-100/60 to-purple-100/40",
+  },
+  {
+    label: "RESUME DEEP-DIVE",
+    title: "Tailored to your background",
+    description:
+      "Upload your resume and the interviewer asks targeted questions about your real projects, roles, and impact.",
+    tags: ["Resume-aware", "Projects", "Impact"],
     gradient: "from-amber-100/60 to-orange-100/40",
-    iconBg: "bg-amber-500/10",
-    iconColor: "text-amber-600",
   },
 ];
 
@@ -69,7 +61,7 @@ export default function AgentTypesSection() {
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-16 md:mb-20">
           <div
-            className="inline-flex items-center gap-2 px-4 py-1.5 bg-white/80 rounded-full border border-black/[0.06] mb-6 text-[11px] font-medium uppercase tracking-[0.1em] text-[#0a0a0a]/60"
+            className="inline-flex items-center gap-2 px-4 py-1.5 bg-white/80 rounded-full border border-black/6 mb-6 text-[11px] font-medium uppercase tracking-[0.1em] text-[#0a0a0a]/60"
             style={{ fontFamily: "var(--font-inter)" }}
           >
             Interview Types
@@ -135,36 +127,16 @@ export default function AgentTypesSection() {
                   {agent.description}
                 </p>
 
-                <div className="flex items-center gap-6">
-                  <div>
-                    <div
-                      className="text-[#0a0a0a] text-lg font-semibold tracking-[-0.02em]"
+                <div className="flex flex-wrap items-center gap-2">
+                  {agent.tags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="px-3 py-1 rounded-full bg-black/[0.04] text-[#0a0a0a]/55 text-[11px] font-medium"
                       style={{ fontFamily: "var(--font-inter)" }}
                     >
-                      {agent.stats.volume}
-                    </div>
-                    <div
-                      className="text-[#0a0a0a]/35 text-[11px] font-medium uppercase tracking-[0.05em]"
-                      style={{ fontFamily: "var(--font-inter)" }}
-                    >
-                      Interviews
-                    </div>
-                  </div>
-                  <div className="w-px h-8 bg-black/[0.06]" />
-                  <div>
-                    <div
-                      className="text-[#0a0a0a] text-lg font-semibold tracking-[-0.02em]"
-                      style={{ fontFamily: "var(--font-inter)" }}
-                    >
-                      {agent.stats.accuracy}
-                    </div>
-                    <div
-                      className="text-[#0a0a0a]/35 text-[11px] font-medium uppercase tracking-[0.05em]"
-                      style={{ fontFamily: "var(--font-inter)" }}
-                    >
-                      Accuracy
-                    </div>
-                  </div>
+                      {tag}
+                    </span>
+                  ))}
                 </div>
               </div>
             </div>
