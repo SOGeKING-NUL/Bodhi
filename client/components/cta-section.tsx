@@ -1,49 +1,81 @@
-"use client"
+"use client";
+
+import { SignInButton, useAuth } from "@clerk/nextjs";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 
 export default function CTASection() {
-  return (
-    <div className="w-full relative overflow-hidden flex flex-col justify-center items-center gap-2">
-      {/* Content */}
-      <div className="self-stretch px-6 md:px-24 py-12 md:py-12 border-t border-b border-[rgba(55,50,47,0.12)] flex justify-center items-center gap-6 relative z-10">
-        <div className="absolute inset-0 w-full h-full overflow-hidden">
-          <div className="w-full h-full relative">
-            {Array.from({ length: 300 }).map((_, i) => (
-              <div
-                key={i}
-                className="absolute h-4 w-full rotate-[-45deg] origin-top-left outline outline-[0.5px] outline-[rgba(3,7,18,0.08)] outline-offset-[-0.25px]"
-                style={{
-                  top: `${i * 16 - 120}px`,
-                  left: "-100%",
-                  width: "300%",
-                }}
-              ></div>
-            ))}
-          </div>
-        </div>
+  const { isSignedIn } = useAuth();
+  const [isVisible, setIsVisible] = useState(false);
+  const sectionRef = useRef<HTMLDivElement>(null);
 
-        <div className="w-full max-w-[586px] px-6 py-5 md:py-8 overflow-hidden rounded-lg flex flex-col justify-start items-center gap-6 relative z-20">
-          <div className="self-stretch flex flex-col justify-start items-start gap-3">
-            <div className="self-stretch text-center flex justify-center flex-col text-[#49423D] text-3xl md:text-5xl font-semibold leading-tight md:leading-[56px] font-sans tracking-tight">
-              Ready to transform your business?
-            </div>
-            <div className="self-stretch text-center text-[#605A57] text-base leading-7 font-sans font-medium">
-              Join thousands of businesses streamlining their operations,
-              <br />
-              managing schedules, and growing with data-driven insights.
-            </div>
-          </div>
-          <div className="w-full max-w-[497px] flex flex-col justify-center items-center gap-12">
-            <div className="flex justify-start items-center gap-4">
-              <div className="h-10 px-12 py-[6px] relative bg-[#37322F] shadow-[0px_0px_0px_2.5px_rgba(255,255,255,0.08)_inset] overflow-hidden rounded-full flex justify-center items-center cursor-pointer hover:bg-[#2A2520] transition-colors">
-                <div className="w-44 h-[41px] absolute left-0 top-0 bg-gradient-to-b from-[rgba(255,255,255,0)] to-[rgba(0,0,0,0.10)] mix-blend-multiply"></div>
-                <div className="flex flex-col justify-center text-white text-[13px] font-medium leading-5 font-sans">
-                  Start for free
-                </div>
-              </div>
-            </div>
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) setIsVisible(true);
+      },
+      { threshold: 0.3 },
+    );
+    if (sectionRef.current) observer.observe(sectionRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <section
+      ref={sectionRef}
+      className="w-full py-24 md:py-32 px-4 md:px-8 border-b border-black/4"
+    >
+      <div className="max-w-4xl mx-auto relative z-10">
+        <div
+          className="text-center"
+          style={{
+            opacity: isVisible ? 1 : 0,
+            transform: isVisible ? "translateY(0)" : "translateY(20px)",
+            transition: "all 0.8s cubic-bezier(0.16, 1, 0.3, 1)",
+          }}
+        >
+          <h2
+            className="text-[#0a0a0a] text-[40px] md:text-[56px] font-light leading-[1.05] tracking-[-0.03em] mb-4"
+            style={{ fontFamily: "'Inter', sans-serif" }}
+          >
+            Start your mock
+            <br />
+            interviews today.
+          </h2>
+
+          <p
+            className="text-[#0a0a0a]/40 text-sm md:text-[15px] leading-relaxed max-w-lg mx-auto mb-10 font-medium"
+            style={{ fontFamily: "'Inter', sans-serif" }}
+          >
+            Upload your resume, pick a role, and run your first AI-powered mock
+            interview in minutes — with feedback that works around the clock.
+          </p>
+
+          <div className="flex items-center justify-center">
+            {isSignedIn ? (
+              <Link
+                href="/interview"
+                className="h-[46px] px-8 flex items-center bg-[#0a0a0a] text-white text-[12px] uppercase tracking-[0.05em] font-semibold rounded-md transition-all duration-300 hover:bg-[#1a1a1a] hover:shadow-[0_4px_12px_rgba(0,0,0,0.15)] active:scale-[0.98]"
+                style={{ fontFamily: "'Inter', sans-serif", borderRadius: "8px" }}
+              >
+                Start an interview
+              </Link>
+            ) : (
+              <SignInButton mode="modal">
+                <button
+                  className="h-[46px] px-8 bg-[#0a0a0a] text-white text-[12px] uppercase tracking-[0.05em] font-semibold rounded-md transition-all duration-300 hover:bg-[#1a1a1a] hover:shadow-[0_4px_12px_rgba(0,0,0,0.15)] active:scale-[0.98]"
+                  style={{
+                    fontFamily: "'Inter', sans-serif",
+                    borderRadius: "8px",
+                  }}
+                >
+                  Start practicing free
+                </button>
+              </SignInButton>
+            )}
           </div>
         </div>
       </div>
-    </div>
-  )
+    </section>
+  );
 }

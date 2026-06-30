@@ -3,7 +3,7 @@
 import { useAuth } from "@clerk/nextjs";
 import { useEffect, useMemo, useState } from "react";
 
-import { getCurrentUserStatus, uploadResume, type CandidateProfile } from "../lib/api";
+import { getCurrentUserStatus, uploadResume } from "../lib/api";
 
 export default function ResumeUploadModal() {
   const { isSignedIn, getToken } = useAuth();
@@ -37,11 +37,8 @@ export default function ResumeUploadModal() {
         const token = await getToken();
         const status = await getCurrentUserStatus(token ?? undefined);
         if (!alive) return;
-        // Only show modal when we get a confirmed has_resume: false
-        // Never block the user due to API errors or timeouts
         setOpen(status.has_resume === false);
       } catch {
-        // On error (network, auth not ready, etc.) silently skip — do not block the user
         if (alive) setOpen(false);
       } finally {
         if (alive) setChecking(false);
@@ -52,7 +49,7 @@ export default function ResumeUploadModal() {
     return () => {
       alive = false;
     };
-  }, [isSignedIn]);
+  }, [isSignedIn, getToken]);
 
   const handleSkip = () => {
     localStorage.setItem("bodhi_skip_resume", "true");

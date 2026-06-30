@@ -1,146 +1,54 @@
 "use client";
 
 import Link from "next/link";
-import Navbar from "@/components/Navbar";
+import AppShell from "@/components/app/app-shell";
+import { ArrowLeftIcon } from "@/components/app/ui/icons";
+import { Card } from "@/components/app/ui/card";
 
 const DEMO_PHASES = [
-  {
-    phase: "intro",
-    title: "Introduction Phase",
-    description: "Practice self-introduction and background discussion",
-    icon: "👋",
-    color: "bg-blue-50 border-blue-200 hover:bg-blue-100",
-  },
-  {
-    phase: "technical",
-    title: "Technical Phase",
-    description: "Domain concepts, language internals, system design",
-    icon: "💻",
-    color: "bg-purple-50 border-purple-200 hover:bg-purple-100",
-  },
-  {
-    phase: "behavioral",
-    title: "Behavioral Phase",
-    description: "STAR-method questions, leadership, teamwork",
-    icon: "🤝",
-    color: "bg-green-50 border-green-200 hover:bg-green-100",
-  },
-  {
-    phase: "dsa",
-    title: "DSA/Coding Phase",
-    description: "Algorithms, data structures, complexity analysis",
-    icon: "🧮",
-    color: "bg-orange-50 border-orange-200 hover:bg-orange-100",
-  },
-  {
-    phase: "project",
-    title: "Project Discussion",
-    description: "Past projects, architecture, trade-offs",
-    icon: "🚀",
-    color: "bg-pink-50 border-pink-200 hover:bg-pink-100",
-  },
+  { phase: "intro", title: "Introduction", description: "Self-introduction and background discussion" },
+  { phase: "technical", title: "Technical", description: "Domain concepts, language internals, system design" },
+  { phase: "behavioral", title: "Behavioral", description: "STAR-method questions, leadership, teamwork" },
+  { phase: "dsa", title: "DSA / Coding", description: "Algorithms, data structures, complexity analysis" },
+  { phase: "project", title: "Project discussion", description: "Past projects, architecture, trade-offs" },
 ];
 
 export default function DemoIndexPage() {
   return (
-    <div className="min-h-screen bg-[#F7F5F3] relative overflow-hidden">
-      {/* Animated Grid Background */}
-      <div className="absolute inset-0 opacity-[0.03] pointer-events-none">
-        <div
-          className="absolute inset-0"
-          style={{
-            backgroundImage: `
-              linear-gradient(to right, #37322F 1px, transparent 1px),
-              linear-gradient(to bottom, #37322F 1px, transparent 1px)
-            `,
-            backgroundSize: "60px 60px",
-          }}
-        />
-      </div>
-
-      {/* Gradient Orbs */}
-      <div className="absolute top-0 left-1/4 w-96 h-96 bg-[#E8E3DF] rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-float" />
-      <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-[#DED9D5] rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-float" style={{ animationDelay: "2s" }} />
-
-      <Navbar />
-      <div className="mx-auto max-w-4xl px-4 pt-28 pb-12">
-        <div className="text-center mb-12">
-          <h1 className="text-4xl font-bold text-[#37322F] mb-4">
-            Interview Phase Demos
-          </h1>
-          <p className="text-lg text-[#6B6662]">
-            Test individual interview phases with GrowthX context
-          </p>
-          <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-blue-100 px-4 py-2 text-sm font-medium text-blue-700">
-            <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
-            Demo Mode Active
+    <AppShell>
+      <div className="mx-auto max-w-4xl">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight text-[#1a1a1a] sm:text-[28px]">
+              Interview phase demos
+            </h1>
+            <p className="mt-1.5 text-[15px] text-neutral-500">
+              Test individual interview phases with GrowthX context — 3–5 questions each.
+            </p>
           </div>
+          <Link
+            href="/interview"
+            className="flex shrink-0 items-center gap-1.5 text-sm font-medium text-neutral-500 transition-colors hover:text-[#1a1a1a]"
+          >
+            <ArrowLeftIcon size={15} />
+            Full interview
+          </Link>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="mt-8 grid gap-4 md:grid-cols-2">
           {DEMO_PHASES.map((demo) => (
-            <Link
-              key={demo.phase}
-              href={`/interview/demo/${demo.phase}`}
-              className={`block rounded-2xl border-2 p-6 transition-all ${demo.color}`}
-            >
-              <div className="flex items-start gap-4">
-                <div className="text-4xl">{demo.icon}</div>
-                <div className="flex-1">
-                  <h3 className="text-lg font-semibold text-[#37322F] mb-2">
-                    {demo.title}
-                  </h3>
-                  <p className="text-sm text-[#6B6662]">{demo.description}</p>
-                  <div className="mt-4 flex items-center gap-2 text-xs text-[#8A8580]">
-                    <span>3-5 questions</span>
-                    <span>•</span>
-                    <span>~5-8 minutes</span>
-                    <span>•</span>
-                    <span>GrowthX context</span>
-                  </div>
-                </div>
-              </div>
+            <Link key={demo.phase} href={`/interview/demo/${demo.phase}`}>
+              <Card interactive className="p-5">
+                <h3 className="text-[15px] font-semibold text-[#1a1a1a]">{demo.title}</h3>
+                <p className="mt-1 text-sm text-neutral-500">{demo.description}</p>
+                <p className="mt-3 text-xs text-neutral-400">
+                  3–5 questions · ~5–8 minutes · GrowthX context
+                </p>
+              </Card>
             </Link>
           ))}
         </div>
-
-        <div className="mt-12 rounded-2xl border border-[rgba(55,50,47,0.10)] bg-white p-6 shadow-[0px_2px_8px_rgba(55,50,47,0.06)]">
-          <h3 className="text-lg font-semibold text-[#37322F] mb-3">
-            About Demo Mode
-          </h3>
-          <ul className="space-y-2 text-sm text-[#6B6662]">
-            <li className="flex items-start gap-2">
-              <span className="text-green-600 mt-0.5">✓</span>
-              <span>Each demo is locked to a specific phase (no transitions)</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-green-600 mt-0.5">✓</span>
-              <span>Uses GrowthX company profile for realistic context</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-green-600 mt-0.5">✓</span>
-              <span>Shorter sessions (3-5 questions) for quick testing</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-green-600 mt-0.5">✓</span>
-              <span>Full proctoring and sentiment analysis enabled</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-green-600 mt-0.5">✓</span>
-              <span>Same scoring and feedback as full interviews</span>
-            </li>
-          </ul>
-        </div>
-
-        <div className="mt-6 text-center">
-          <Link
-            href="/interview"
-            className="inline-flex items-center gap-2 text-sm text-[#6B6662] hover:text-[#37322F] transition-colors"
-          >
-            ← Back to Full Interview
-          </Link>
-        </div>
       </div>
-    </div>
+    </AppShell>
   );
 }

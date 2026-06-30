@@ -287,12 +287,12 @@
   backdrop-filter: blur(8.25px);
 }
 
-/* Smooth scroll behavior */
+
 html {
   scroll-behavior: smooth;
 }
 
-/* Custom scrollbar */
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;

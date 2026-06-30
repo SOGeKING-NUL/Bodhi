@@ -1,21 +1,3 @@
-/**
- * Seamless Audio Playback using Web Audio API (raw PCM-16).
- *
- * The backend streams raw little-endian PCM-16 (linear16) chunks over the
- * WebSocket. We convert each chunk to a Float32 AudioBuffer and schedule it
- * with precise timing so chunks play back-to-back with no gaps.
- *
- * Why raw PCM instead of MP3 + decodeAudioData():
- *  - decodeAudioData() is unreliable on *partial* MP3 frames (chunks arriving
- *    mid-frame fail to decode), which caused the jitter/gaps we're fixing.
- *  - PCM needs no decode step, so conversion is instant and lossless, and
- *    every chunk is independently playable.
- *
- * Scheduling strategy (unchanged from the MP3 version):
- *  - Pre-buffer MIN_BUFFER_MS before starting to absorb network jitter.
- *  - Schedule each buffer at max(now + LOOK_AHEAD_MS, nextStartTime) so they
- *    chain seamlessly.
- */
 
 import { useRef, useCallback } from 'react'
 
@@ -27,10 +9,9 @@ interface SeamlessAudioPlayer {
   setSampleRate: (rate: number) => void
 }
 
-// Configuration constants
-const MIN_BUFFER_MS = 300 // Minimum buffer before starting playback (prevents initial gaps)
-const LOOK_AHEAD_MS = 100 // How far ahead to schedule (prevents gaps during playback)
-const DEFAULT_SAMPLE_RATE = 22050 // Sarvam linear16 default; overridden via setSampleRate
+const MIN_BUFFER_MS = 300
+const LOOK_AHEAD_MS = 100
+const DEFAULT_SAMPLE_RATE = 22050
 
 export function useSeamlessAudio(
   onPlaybackStart?: () => void,
@@ -44,11 +25,8 @@ export function useSeamlessAudio(
 
   const decodedBuffersRef = useRef<AudioBuffer[]>([])
   const hasStartedPlaybackRef = useRef<boolean>(false)
-  // Carries a single trailing byte if a chunk ends mid-sample.
   const leftoverByteRef = useRef<number | null>(null)
 
-  // Let the AudioContext run at its native rate; AudioBuffers are created at
-  // the PCM sample rate and Web Audio resamples them on playback.
   const getAudioContext = useCallback((): AudioContext => {
     if (!audioContextRef.current) {
       audioContextRef.current = new AudioContext()
@@ -60,12 +38,10 @@ export function useSeamlessAudio(
     if (rate && rate > 0) sampleRateRef.current = rate
   }, [])
 
-  // Calculate total buffered duration
   const getBufferedDuration = useCallback((): number => {
     return decodedBuffersRef.current.reduce((total, buffer) => total + buffer.duration, 0)
   }, [])
 
-  // Schedule all available buffers with precise, gapless timing.
   const scheduleAvailableBuffers = useCallback(() => {
     const ctx = getAudioContext()
     const currentTime = ctx.currentTime
@@ -107,11 +83,9 @@ export function useSeamlessAudio(
     }
   }, [getAudioContext, onPlaybackStart, onPlaybackComplete])
 
-  // Convert a raw PCM-16 (little-endian) chunk to a mono Float32 AudioBuffer.
   const pcmToAudioBuffer = useCallback((pcmChunk: Uint8Array): AudioBuffer | null => {
     const ctx = getAudioContext()
 
-    // Stitch any leftover trailing byte from the previous chunk.
     let bytes: Uint8Array = pcmChunk
     if (leftoverByteRef.current !== null) {
       const merged = new Uint8Array(pcmChunk.length + 1)
@@ -120,7 +94,6 @@ export function useSeamlessAudio(
       bytes = merged
       leftoverByteRef.current = null
     }
-    // Stash a trailing odd byte for the next chunk.
     if (bytes.length % 2 !== 0) {
       leftoverByteRef.current = bytes[bytes.length - 1]
       bytes = bytes.subarray(0, bytes.length - 1)
@@ -132,7 +105,7 @@ export function useSeamlessAudio(
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     const float32 = new Float32Array(sampleCount)
     for (let i = 0; i < sampleCount; i++) {
-      const int16 = view.getInt16(i * 2, true) // little-endian
+      const int16 = view.getInt16(i * 2, true)
       float32[i] = int16 < 0 ? int16 / 0x8000 : int16 / 0x7fff
     }
 
@@ -141,7 +114,6 @@ export function useSeamlessAudio(
     return audioBuffer
   }, [getAudioContext])
 
-  // Enqueue a raw PCM-16 chunk for playback.
   const enqueueChunk = useCallback(async (pcmChunk: Uint8Array) => {
     if (pcmChunk.length === 0) return
 
@@ -165,7 +137,6 @@ export function useSeamlessAudio(
     }
   }, [pcmToAudioBuffer, getBufferedDuration, scheduleAvailableBuffers])
 
-  // Flush any remaining buffered audio (e.g. on a control-message boundary).
   const flush = useCallback(async () => {
     if (decodedBuffersRef.current.length > 0) {
       hasStartedPlaybackRef.current = true
@@ -173,14 +144,12 @@ export function useSeamlessAudio(
     }
   }, [scheduleAvailableBuffers])
 
-  // Stop all playback immediately and tear down the context.
   const stop = useCallback(() => {
     scheduledSourcesRef.current.forEach(source => {
       try {
         source.stop()
         source.disconnect()
       } catch {
-        // Source may have already stopped
       }
     })
     scheduledSourcesRef.current = []

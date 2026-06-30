@@ -1,6 +1,10 @@
 services:
+  # Backend API Service - FastAPI with ML models
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bodhi-api
     restart: unless-stopped
     ports:
       # Host port is configurable (API_HOST_PORT in .env) to avoid clashes with
@@ -9,7 +13,10 @@ services:
     env_file:
       - .env
     environment:
+      # Override Redis URL to use Docker network
       - REDIS_URL=redis://redis:6379
+      # Python environment
+      - PYTHONUNBUFFERED=1
     depends_on:
       redis:
         condition: service_healthy
@@ -18,8 +25,8 @@ services:
       # restart the container to pick changes up).
       - ./src:/app/src
       # Persist model downloads across restarts
-      - model_cache:/root/.deepface
-      - yolo_cache:/root/ultralytics
+      - deepface_models:/root/.deepface
+      - yolo_models:/root/ultralytics
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -27,16 +34,36 @@ services:
       retries: 3
       start_period: 60s
 
+  # Redis Service - Caching and session management
   redis:
     image: redis:7-alpine
+    container_name: bodhi-redis
     restart: unless-stopped
-    command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    networks:
+      - bodhi-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
+# Named volumes for persistent data
 volumes:
-  model_cache:
-  yolo_cache:
+  deepface_models:
+    driver: local
+  yolo_models:
+    driver: local
+
+# Custom network for service communication
+networks:
+  bodhi-network:
+    driver: bridge

@@ -1,20 +1,15 @@
 import { useCallback, useRef, useState } from "react"
 import { useAuth } from "@clerk/nextjs"
 import { useSeamlessAudio } from "./useSeamlessAudio"
+import type { SentimentMeta } from "@/lib/api"
 
-// Client-side VAD is used ONLY for barge-in detection. End-of-turn detection
-// is handled server-side by Deepgram's endpointing — the client streams raw
-// PCM-16 continuously and never decides when an utterance ends.
 const SILENCE_THRESHOLD = 0.015
-const BARGE_CONFIRM_FRAMES = 3 // consecutive speech frames before we barge in
-const TARGET_SAMPLE_RATE = 16000 // Deepgram input rate
+const BARGE_CONFIRM_FRAMES = 3
+const TARGET_SAMPLE_RATE = 16000
 
-// Hysteresis for the "you're speaking" UI indicator — separate from the
-// barge-in detector so a few quiet frames between words don't flicker it off.
 const SPEAKING_INDICATOR_ON_FRAMES = 2
 const SPEAKING_INDICATOR_OFF_FRAMES = 8
 
-/** Downsample a Float32 buffer from `inRate` to 16 kHz (linear interpolation). */
 function downsampleTo16k(buffer: Float32Array, inRate: number): Float32Array {
   if (inRate === TARGET_SAMPLE_RATE) return buffer
   const ratio = inRate / TARGET_SAMPLE_RATE
@@ -30,7 +25,6 @@ function downsampleTo16k(buffer: Float32Array, inRate: number): Float32Array {
   return out
 }
 
-/** Convert Float32 [-1,1] samples to little-endian PCM-16 bytes. */
 function floatToPcm16(float32: Float32Array): ArrayBuffer {
   const out = new ArrayBuffer(float32.length * 2)
   const view = new DataView(out)
@@ -53,7 +47,7 @@ export function useInterviewAudio() {
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
-  const streamingRef = useRef(false) // forward mic audio to backend when true
+  const streamingRef = useRef(false)
   const bargeFramesRef = useRef(0)
   const speakingOnFramesRef = useRef(0)
   const speakingOffFramesRef = useRef(0)
@@ -66,11 +60,9 @@ export function useInterviewAudio() {
     }
   }, [])
 
-  // Callback refs for seamless audio
   const onPlaybackStartRef = useRef<(() => void) | null>(null)
   const onPlaybackCompleteRef = useRef<(() => void) | null>(null)
 
-  // Seamless audio player using Web Audio API (raw PCM-16)
   const seamlessAudio = useSeamlessAudio(
     () => onPlaybackStartRef.current?.(),
     () => onPlaybackCompleteRef.current?.()
@@ -89,7 +81,6 @@ export function useInterviewAudio() {
     processor.onaudioprocess = (e) => {
       const input = e.inputBuffer.getChannelData(0)
 
-      // RMS level (UI meter + barge-in detection)
       let sum = 0
       for (let i = 0; i < input.length; i++) sum += input[i] * input[i]
       const rms = Math.sqrt(sum / input.length)
@@ -101,9 +92,6 @@ export function useInterviewAudio() {
 
       const speaking = rms > SILENCE_THRESHOLD
 
-      // While Bodhi is speaking, watch for barge-in and DON'T forward the
-      // mic to STT (avoids transcribing Bodhi's own voice). On confirmed
-      // speech, interrupt playback and resume forwarding.
       if (seamlessAudio.isPlaying()) {
         if (speaking) {
           bargeFramesRef.current++
@@ -123,8 +111,6 @@ export function useInterviewAudio() {
       }
       bargeFramesRef.current = 0
 
-      // "You're speaking" UI indicator — debounced so it doesn't flicker
-      // between words while still feeling immediate.
       if (speaking) {
         speakingOnFramesRef.current++
         speakingOffFramesRef.current = 0
@@ -139,7 +125,6 @@ export function useInterviewAudio() {
         }
       }
 
-      // Forward continuous PCM-16 (16 kHz mono) to the backend → Deepgram.
       const pcm16 = downsampleTo16k(input, ctx.sampleRate)
       try {
         ws.send(floatToPcm16(pcm16))
@@ -174,9 +159,6 @@ export function useInterviewAudio() {
     seamlessAudio.stop()
   }, [seamlessAudio, setSpeakingIndicator])
 
-  // Begin forwarding mic audio to the backend (server-side endpointing takes
-  // over from here). The onRecording/onFinish callbacks are retained for API
-  // compatibility but are no longer driven client-side.
   const startListening = useCallback(
     (onListening: () => void, _onRecording?: () => void, _onFinish?: () => void) => {
       streamingRef.current = true
@@ -202,7 +184,7 @@ export function useInterviewAudio() {
       onTranscript: (text: string) => void,
       onInterimTranscript?: (text: string) => void,
       onPartialReply: (chunk: string) => void,
-      onReplyComplete: (text: string, phase: string, shouldEnd: boolean, sentiment?: any) => void,
+      onReplyComplete: (text: string, phase: string, shouldEnd: boolean, sentiment?: SentimentMeta) => void,
       onError: (err: string) => void,
       onPlaybackStart: () => void,
       onPlaybackComplete: () => void
@@ -213,16 +195,12 @@ export function useInterviewAudio() {
 
     let baseUrl = process.env.NEXT_PUBLIC_API_URL || window.location.origin
     baseUrl = baseUrl.replace(/^http/, 'ws')
-    // Browsers can't set Authorization headers on WebSockets, so the backend
-    // accepts the Clerk token as a `token` query param for the handshake.
     const token = await getToken()
     const url = `${baseUrl}/api/interviews/${sessionId}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`
     const ws = new WebSocket(url)
     ws.binaryType = "arraybuffer"
 
     ws.onopen = () => {
-      // Stream the mic continuously for the whole session; the client VAD
-      // above only gates forwarding during playback for barge-in.
       streamingRef.current = true
     }
 
@@ -254,12 +232,10 @@ export function useInterviewAudio() {
             await seamlessAudio.flush()
             callbacks.onReplyComplete(msg.text, msg.phase, msg.should_end, msg.sentiment)
             break
-          // interrupted / pong: no-op (additive)
           default:
             break
         }
       } else {
-        // Binary raw PCM-16 chunk → enqueue to seamless player
         const chunk = new Uint8Array(e.data)
         await seamlessAudio.enqueueChunk(chunk)
       }
@@ -272,7 +248,6 @@ export function useInterviewAudio() {
     wsRef.current = ws
   }, [seamlessAudio, getToken])
 
-  /** Send a JSON control message on the interview WebSocket (e.g. proctor_alert). */
   const sendControl = useCallback((obj: Record<string, unknown>) => {
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {

@@ -23,7 +23,7 @@ export default function ClerkUserSync() {
         syncedRef.current = null;
       }
     })();
-  }, [isSignedIn, userId]);
+  }, [isSignedIn, userId, getToken]);
 
   return null;
 }
