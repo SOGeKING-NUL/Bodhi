@@ -8,27 +8,104 @@ interface Violation {
   timestamp: string
 }
 
-// How often we run the in-browser CV detector (ms). ~1 FPS is plenty for
-// proctoring and keeps the WASM model cheap on the main thread.
-const DETECT_INTERVAL_MS = 1000
+const DETECT_INTERVAL_MS = 900
 
-// Per-type cooldown so a sustained condition (e.g. you look away for 10s) logs
-// ONE violation, not ten.
-const VIOLATION_COOLDOWN_MS = 6000
+// Consecutive frames a condition must hold before we flag it (debounces glances).
+const PERSIST_FRAMES: Record<string, number> = {
+  no_face: 3,
+  looking_away: 3,
+  phone_detected: 2,
+  unauthorized_object: 2,
+  multiple_people: 2,
+}
 
-// Rolling window used to compute the "violation rate" that triggers Bodhi's
-// verbal reassurance. If more than RATE_THRESHOLD of the last WINDOW detections
-// were violations, we ask Bodhi to tell the candidate to relax.
-const RATE_WINDOW = 12        // ~12s of detections
-const RATE_THRESHOLD = 0.5    // >50% of recent frames had a violation
-const ALERT_COOLDOWN_MS = 45000 // client-side guard (backend also rate-limits)
+const VIOLATION_COOLDOWN_MS = 8000  // don't re-log the same sustained condition
+const EVENT_COOLDOWN_MS = 5000      // debounce discrete browser events
 
-// CDN-hosted WASM runtime + model. Avoids bundling large binaries; needs network
-// at runtime (fine for the hosted app / dev).
+// Violation rate over a rolling window that triggers Bodhi's "relax" line.
+const RATE_WINDOW = 12
+const RATE_THRESHOLD = 0.5
+const ALERT_COOLDOWN_MS = 45000
+
+// Gaze: 0.5 = centered, flag when well off-center.
+const HEAD_YAW_LO = 0.36
+const HEAD_YAW_HI = 0.64
+const HEAD_PITCH_LO = 0.30
+const HEAD_PITCH_HI = 0.72
+const IRIS_LO = 0.35
+const IRIS_HI = 0.65
+
+const OBJECT_SCORE_THRESHOLD = 0.45
+const PHONE_CLASSES = new Set(["cell phone"])
+const UNAUTHORIZED_CLASSES = new Set(["book", "laptop", "tv", "remote", "keyboard"])
+
+const BEHAVIORAL_SAMPLE_MS = 4000  // how often we send an emotion/posture/gaze sample
+
 const WASM_BASE =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm"
 const FACE_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+const OBJECT_MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite"
+const POSE_MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+
+// Map the 52 face blendshapes to a coarse emotion label.
+function blendshapesToEmotion(categories: any[]): string {
+  if (!categories || categories.length === 0) return "neutral"
+  const m: Record<string, number> = {}
+  for (const c of categories) m[c.categoryName] = c.score
+  const smile = ((m.mouthSmileLeft ?? 0) + (m.mouthSmileRight ?? 0)) / 2
+  const frown = ((m.mouthFrownLeft ?? 0) + (m.mouthFrownRight ?? 0)) / 2
+  const browDown = ((m.browDownLeft ?? 0) + (m.browDownRight ?? 0)) / 2
+  const jawOpen = m.jawOpen ?? 0
+  const browInnerUp = m.browInnerUp ?? 0
+  if (smile > 0.4) return "happy"
+  if (jawOpen > 0.4 && browInnerUp > 0.3) return "surprised"
+  if (browDown > 0.4) return "tense"
+  if (frown > 0.3 || browInnerUp > 0.5) return "sad"
+  return "neutral"
+}
+
+// Posture from pose landmarks (nose vs shoulders).
+function classifyPosture(lm: any[]): string {
+  const nose = lm?.[0], lsh = lm?.[11], rsh = lm?.[12]
+  if (!nose || !lsh || !rsh) return "good"
+  const shMidX = (lsh.x + rsh.x) / 2
+  const shMidY = (lsh.y + rsh.y) / 2
+  if (Math.abs(nose.x - shMidX) > 0.18) return "leaning_away"
+  if (shMidY - nose.y < 0.12) return "slouching"   // head dropped toward shoulders
+  if (Math.abs(lsh.y - rsh.y) > 0.12) return "leaning_away"
+  return "good"
+}
+
+// Nose position between the cheek edges, ~0.5 = facing forward.
+function headYawRatio(lm: any[]): number | null {
+  const left = lm[234], right = lm[454], nose = lm[1]
+  if (!left || !right || !nose) return null
+  const span = right.x - left.x
+  if (Math.abs(span) < 1e-4) return null
+  return (nose.x - left.x) / span
+}
+
+// Nose position between forehead and chin, ~0.5 = level.
+function headPitchRatio(lm: any[]): number | null {
+  const top = lm[10], bottom = lm[152], nose = lm[1]
+  if (!top || !bottom || !nose) return null
+  const span = bottom.y - top.y
+  if (Math.abs(span) < 1e-4) return null
+  return (nose.y - top.y) / span
+}
+
+/** Horizontal iris position within an eye (~0.5 = looking straight ahead).
+ *  outer/inner = eye-corner landmarks, iris = iris-center landmark. */
+function irisRatio(lm: any[], outerIdx: number, innerIdx: number, irisIdx: number): number | null {
+  const outer = lm[outerIdx], inner = lm[innerIdx], iris = lm[irisIdx]
+  if (!outer || !inner || !iris) return null
+  const span = inner.x - outer.x
+  if (Math.abs(span) < 1e-4) return null
+  return (iris.x - outer.x) / span
+}
 
 export function useProctoring(
   videoRef: RefObject<HTMLVideoElement | null>,
@@ -46,16 +123,25 @@ export function useProctoring(
   const proctoringWsRef = useRef<WebSocket | null>(null)
   const detectIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // MediaPipe FaceLandmarker instance (loaded lazily on connect).
-  const landmarkerRef = useRef<any>(null)
-  const lastVideoTimeRef = useRef(-1)
+  // MediaPipe models (loaded lazily on connect).
+  const faceRef = useRef<any>(null)
+  const objectRef = useRef<any>(null)
+  const poseRef = useRef<any>(null)
+  const lastTsRef = useRef(0)
 
-  // Violation bookkeeping.
+  // Latest facial emotion / gaze, sent as behavioral samples on a timer.
+  const latestEmotionRef = useRef("neutral")
+  const latestGazeRef = useRef("center")
+  const lastSampleAtRef = useRef(0)
+
+  // Bookkeeping.
   const lastLoggedAtRef = useRef<Record<string, number>>({})
+  const persistRef = useRef<Record<string, number>>({}) // consecutive-frame counters
   const recentRef = useRef<boolean[]>([])
   const lastAlertAtRef = useRef(0)
+  const eventCleanupRef = useRef<(() => void) | null>(null)
 
-  // Keep the latest alert callback without forcing a reconnect.
+  // Keep latest alert callback without forcing a reconnect.
   const onAlertRef = useRef<(() => void) | undefined>(onProctorAlert)
   onAlertRef.current = onProctorAlert
 
@@ -84,6 +170,8 @@ export function useProctoring(
       clearInterval(detectIntervalRef.current)
       detectIntervalRef.current = null
     }
+    eventCleanupRef.current?.()
+    eventCleanupRef.current = null
     if (cameraStreamRef.current) {
       cameraStreamRef.current.getTracks().forEach((track) => {
         track.stop()
@@ -95,18 +183,20 @@ export function useProctoring(
       videoRef.current.srcObject = null
       videoRef.current.load()
     }
-    try {
-      landmarkerRef.current?.close?.()
-    } catch {}
-    landmarkerRef.current = null
+    try { faceRef.current?.close?.() } catch {}
+    try { objectRef.current?.close?.() } catch {}
+    try { poseRef.current?.close?.() } catch {}
+    faceRef.current = null
+    objectRef.current = null
+    poseRef.current = null
   }, [videoRef])
 
-  /** Record a violation: throttle per-type, update UI, and log to the backend. */
+  // Throttle per-type, push to the UI list, and log to the backend.
   const recordViolation = useCallback(
-    (type: string, severity: string, message: string) => {
+    (type: string, severity: string, message: string, cooldown = VIOLATION_COOLDOWN_MS) => {
       const now = Date.now()
       const last = lastLoggedAtRef.current[type] ?? 0
-      if (now - last < VIOLATION_COOLDOWN_MS) return
+      if (now - last < cooldown) return
       lastLoggedAtRef.current[type] = now
 
       const v: Violation = {
@@ -115,26 +205,24 @@ export function useProctoring(
         message,
         timestamp: new Date().toISOString(),
       }
-      setViolations((prev) => [...prev, v].slice(-20))
+      setViolations((prev) => [...prev, v].slice(-30))
 
       const ws = proctoringWsRef.current
       if (ws?.readyState === WebSocket.OPEN) {
         try {
-          ws.send(
-            JSON.stringify({
-              type: "client_violation",
-              violation_type: type,
-              severity,
-              message,
-            })
-          )
+          ws.send(JSON.stringify({
+            type: "client_violation",
+            violation_type: type,
+            severity,
+            message,
+          }))
         } catch {}
       }
     },
     []
   )
 
-  /** Push the latest frame's verdict into the rolling window and maybe alert. */
+  // Track the violation rate; fire the relax callback when it's sustained high.
   const updateRate = useCallback((hadViolation: boolean) => {
     const w = recentRef.current
     w.push(hadViolation)
@@ -150,75 +238,210 @@ export function useProctoring(
     }
   }, [])
 
-  /** Run one detection pass on the current video frame. */
+  // Count consecutive frames a condition holds; record it once it persists.
+  const sustain = useCallback(
+    (type: string, active: boolean, severity: string, message: string): boolean => {
+      const need = PERSIST_FRAMES[type] ?? 2
+      const counters = persistRef.current
+      if (!active) {
+        counters[type] = 0
+        return false
+      }
+      counters[type] = (counters[type] ?? 0) + 1
+      if (counters[type] === need) {
+        recordViolation(type, severity, message)
+        return true
+      }
+      return counters[type] >= need
+    },
+    [recordViolation]
+  )
+
   const detectOnce = useCallback(() => {
     const video = videoRef.current
-    const landmarker = landmarkerRef.current
-    if (!video || !landmarker || video.readyState < 2) return
+    if (!video || video.readyState < 2) return
 
-    // Skip if the frame hasn't advanced (avoids "timestamp mismatch" errors).
-    if (video.currentTime === lastVideoTimeRef.current) return
-    lastVideoTimeRef.current = video.currentTime
+    // MediaPipe VIDEO mode needs strictly increasing timestamps.
+    let ts = performance.now()
+    if (ts <= lastTsRef.current) ts = lastTsRef.current + 1
+    lastTsRef.current = ts
 
-    let result: any
-    try {
-      result = landmarker.detectForVideo(video, performance.now())
-    } catch {
-      return
-    }
+    let anyViolation = false
 
-    const faces: any[] = result?.faceLandmarks ?? []
-    let hadViolation = false
+    // Face: presence, head pose, iris gaze, emotion.
+    const face = faceRef.current
+    if (face) {
+      let fr: any
+      try { fr = face.detectForVideo(video, ts) } catch { fr = null }
+      const faces: any[] = fr?.faceLandmarks ?? []
 
-    if (faces.length === 0) {
-      hadViolation = true
-      recordViolation("no_face", "medium", "No face detected in frame.")
-    } else if (faces.length > 1) {
-      hadViolation = true
-      recordViolation("multiple_faces", "high", `${faces.length} faces detected in frame.`)
-    } else {
-      // Single face — estimate horizontal head orientation from landmarks.
-      // 234 = right cheek edge, 454 = left cheek edge, 1 = nose tip.
-      const lm = faces[0]
-      const left = lm[234]
-      const right = lm[454]
-      const nose = lm[1]
-      if (left && right && nose) {
-        const span = right.x - left.x
-        if (Math.abs(span) > 1e-4) {
-          const ratio = (nose.x - left.x) / span // ~0.5 when centered
-          if (ratio < 0.34 || ratio > 0.66) {
-            hadViolation = true
-            recordViolation("looking_away", "low", "Candidate looking away from screen.")
-          }
-        }
+      anyViolation = sustain("no_face", faces.length === 0, "medium",
+        "No face detected — candidate may have left the frame.") || anyViolation
+
+      if (faces.length === 1) {
+        const lm = faces[0]
+        const yaw = headYawRatio(lm)
+        const pitch = headPitchRatio(lm)
+        const irisL = irisRatio(lm, 33, 133, 468)
+        const irisR = irisRatio(lm, 263, 362, 473)
+
+        const headOff =
+          (yaw !== null && (yaw < HEAD_YAW_LO || yaw > HEAD_YAW_HI)) ||
+          (pitch !== null && (pitch < HEAD_PITCH_LO || pitch > HEAD_PITCH_HI))
+        const gazeOff =
+          (irisL !== null && (irisL < IRIS_LO || irisL > IRIS_HI)) &&
+          (irisR !== null && (irisR < IRIS_LO || irisR > IRIS_HI))
+
+        anyViolation = sustain("looking_away", headOff || gazeOff, "low",
+          headOff ? "Candidate's head is turned away from the screen."
+                  : "Candidate's eyes are off-screen.") || anyViolation
+
+        latestGazeRef.current = headOff || gazeOff ? "away" : "center"
+        const blend = fr?.faceBlendshapes?.[0]?.categories
+        if (blend) latestEmotionRef.current = blendshapesToEmotion(blend)
+      } else {
+        persistRef.current["looking_away"] = 0
+        if (faces.length === 0) latestGazeRef.current = "away"
       }
     }
 
-    updateRate(hadViolation)
-  }, [videoRef, recordViolation, updateRate])
+    // Objects: phone, unauthorized materials, multiple people.
+    const objd = objectRef.current
+    if (objd) {
+      let or: any
+      try { or = objd.detectForVideo(video, ts) } catch { or = null }
+      const dets: any[] = or?.detections ?? []
+
+      let personCount = 0
+      let phone = false
+      let material: string | null = null
+      for (const d of dets) {
+        const cat = d.categories?.[0]
+        if (!cat || cat.score < OBJECT_SCORE_THRESHOLD) continue
+        const name = (cat.categoryName || "").toLowerCase()
+        if (name === "person") personCount++
+        else if (PHONE_CLASSES.has(name)) phone = true
+        else if (UNAUTHORIZED_CLASSES.has(name)) material = name
+      }
+
+      anyViolation = sustain("phone_detected", phone, "high",
+        "A phone is visible in the frame.") || anyViolation
+      anyViolation = sustain("multiple_people", personCount > 1, "high",
+        `${personCount} people detected in the frame.`) || anyViolation
+      anyViolation = sustain("unauthorized_object", material !== null, "medium",
+        `Unauthorized item in frame: ${material ?? "object"}.`) || anyViolation
+    }
+
+    // Periodic emotion/posture/gaze sample for the report.
+    const now = Date.now()
+    if (now - lastSampleAtRef.current >= BEHAVIORAL_SAMPLE_MS) {
+      lastSampleAtRef.current = now
+      let posture = "good"
+      const pose = poseRef.current
+      if (pose) {
+        let pr: any
+        try { pr = pose.detectForVideo(video, ts + 1) } catch { pr = null }
+        const plm: any[] = pr?.landmarks?.[0] ?? []
+        if (plm.length) posture = classifyPosture(plm)
+      }
+      const ws = proctoringWsRef.current
+      if (ws?.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({
+            type: "client_behavioral",
+            emotion: latestEmotionRef.current,
+            posture,
+            gaze_direction: latestGazeRef.current,
+          }))
+        } catch {}
+      }
+    }
+
+    updateRate(anyViolation)
+  }, [videoRef, sustain, updateRate])
+
+  // Tab-switch / focus / fullscreen / clipboard signals. Returns a cleanup fn.
+  const attachBrowserEvents = useCallback((): (() => void) => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        recordViolation("tab_switch", "medium",
+          "Candidate switched away from the interview tab.", EVENT_COOLDOWN_MS)
+      }
+    }
+    const onBlur = () => {
+      if (!document.hidden) {
+        recordViolation("focus_loss", "medium",
+          "Interview window lost focus.", EVENT_COOLDOWN_MS)
+      }
+    }
+    const onFullscreen = () => {
+      if (!document.fullscreenElement) {
+        recordViolation("fullscreen_exit", "low",
+          "Candidate exited fullscreen.", EVENT_COOLDOWN_MS)
+      }
+    }
+    const onCopy = () => recordViolation("clipboard_copy", "low", "Copy detected.", EVENT_COOLDOWN_MS)
+    const onPaste = () => recordViolation("clipboard_paste", "low", "Paste detected.", EVENT_COOLDOWN_MS)
+
+    document.addEventListener("visibilitychange", onVisibility)
+    window.addEventListener("blur", onBlur)
+    document.addEventListener("fullscreenchange", onFullscreen)
+    document.addEventListener("copy", onCopy)
+    document.addEventListener("paste", onPaste)
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("blur", onBlur)
+      document.removeEventListener("fullscreenchange", onFullscreen)
+      document.removeEventListener("copy", onCopy)
+      document.removeEventListener("paste", onPaste)
+    }
+  }, [recordViolation])
 
   const connectWebSocket = useCallback(
     async (sessionId: string, _referenceImageB64: string) => {
-      // 1) Load the MediaPipe FaceLandmarker (WASM) lazily.
-      if (!landmarkerRef.current) {
+      // Load the MediaPipe models. Face is required; object + pose are best-effort.
+      if (!faceRef.current) {
         try {
           const vision = await import("@mediapipe/tasks-vision")
           const fileset = await vision.FilesetResolver.forVisionTasks(WASM_BASE)
-          landmarkerRef.current = await vision.FaceLandmarker.createFromOptions(fileset, {
+          faceRef.current = await vision.FaceLandmarker.createFromOptions(fileset, {
             baseOptions: { modelAssetPath: FACE_MODEL_URL, delegate: "GPU" },
             runningMode: "VIDEO",
             numFaces: 2,
+            outputFaceBlendshapes: true,
           })
+          if (!objectRef.current) {
+            try {
+              objectRef.current = await vision.ObjectDetector.createFromOptions(fileset, {
+                baseOptions: { modelAssetPath: OBJECT_MODEL_URL, delegate: "GPU" },
+                runningMode: "VIDEO",
+                scoreThreshold: OBJECT_SCORE_THRESHOLD,
+                maxResults: 5,
+              })
+            } catch (objErr) {
+              console.warn("ObjectDetector load failed (phone/object detection off):", objErr)
+            }
+          }
+          if (!poseRef.current) {
+            try {
+              poseRef.current = await vision.PoseLandmarker.createFromOptions(fileset, {
+                baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate: "GPU" },
+                runningMode: "VIDEO",
+                numPoses: 1,
+              })
+            } catch (poseErr) {
+              console.warn("PoseLandmarker load failed (posture tracking off):", poseErr)
+            }
+          }
         } catch (err) {
-          console.warn("FaceLandmarker load failed:", err)
+          console.warn("MediaPipe load failed:", err)
           setCameraError("Proctoring engine failed to load — continuing voice-only.")
-          // No CV, but don't block the interview.
           return
         }
       }
 
-      // 2) Open the logging WebSocket (backend persists violations for the report).
+      // Logging WebSocket. The backend persists violations/samples for the report.
       const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
       const wsBase = apiBase.replace(/^http/, "ws")
       const token = await getToken()
@@ -226,33 +449,25 @@ export function useProctoring(
       const ws = new WebSocket(url)
       proctoringWsRef.current = ws
 
-      ws.onopen = () => {
-        setProctoringActive(true)
-      }
-
+      ws.onopen = () => setProctoringActive(true)
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data)
-          if (msg.type === "frame_result") {
-            if (msg.session_flagged) setSessionFlagged(true)
-          } else if (msg.type === "session_flagged") {
-            setSessionFlagged(true)
-          }
+          if (msg.type === "frame_result" && msg.session_flagged) setSessionFlagged(true)
+          else if (msg.type === "session_flagged") setSessionFlagged(true)
         } catch {}
       }
-
-      ws.onerror = () => {
-        // Logging WS failing should not kill proctoring — detection is local.
-        console.warn("Proctoring log WS error")
-      }
+      ws.onerror = () => console.warn("Proctoring log WS error")
       ws.onclose = () => setProctoringActive(false)
 
-      // 3) Start the local detection loop regardless of the logging WS state.
+      // Start the detection loop + browser-event listeners.
       if (detectIntervalRef.current) clearInterval(detectIntervalRef.current)
       detectIntervalRef.current = setInterval(detectOnce, DETECT_INTERVAL_MS)
+      eventCleanupRef.current?.()
+      eventCleanupRef.current = attachBrowserEvents()
       setProctoringActive(true)
     },
-    [getToken, detectOnce]
+    [getToken, detectOnce, attachBrowserEvents]
   )
 
   const endSession = useCallback(() => {
@@ -260,6 +475,8 @@ export function useProctoring(
       clearInterval(detectIntervalRef.current)
       detectIntervalRef.current = null
     }
+    eventCleanupRef.current?.()
+    eventCleanupRef.current = null
     const ws = proctoringWsRef.current
     if (ws?.readyState === WebSocket.OPEN) {
       try { ws.send(JSON.stringify({ type: "end_session" })) } catch {}
@@ -268,10 +485,7 @@ export function useProctoring(
     proctoringWsRef.current = null
   }, [])
 
-  /**
-   * Re-attach the saved camera stream to the video element after a re-render
-   * (e.g. a phase transition that remounts the <video>).
-   */
+  // Re-attach the stream after a re-render remounts the <video>.
   const reattachStream = useCallback(() => {
     const video = videoRef.current
     const stream = cameraStreamRef.current
@@ -281,7 +495,7 @@ export function useProctoring(
     }
   }, [videoRef])
 
-  // Stubs for face verification compatibility
+  // Stubs for face-verification compatibility.
   const handleFaceViolation = useCallback(() => {}, [])
   const handleFaceFlag = useCallback(() => {}, [])
 
