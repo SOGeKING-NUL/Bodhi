@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const BACKEND_URL =
-  process.env.BACKEND_URL ?? "http://localhost:8000";
+  process.env.BACKEND_URL ?? "https://karush2807-bodhi-backend.hf.space";
 
 const nextConfig: NextConfig = {
   experimental: {
