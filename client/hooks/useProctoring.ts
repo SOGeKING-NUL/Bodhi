@@ -1,10 +1,5 @@
 import { useCallback, useRef, useState, RefObject } from "react"
 import { useAuth } from "@clerk/nextjs"
-import type {
-  FaceLandmarker,
-  FaceLandmarkerResult,
-  NormalizedLandmark,
-} from "@mediapipe/tasks-vision"
 
 interface Violation {
   violation_type: string
@@ -12,10 +7,6 @@ interface Violation {
   message: string
   timestamp: string
 }
-
-const DETECT_INTERVAL_MS = 1000
-
-const VIOLATION_COOLDOWN_MS = 6000
 
 const DETECT_INTERVAL_MS = 900
 
@@ -131,9 +122,6 @@ export function useProctoring(
   const cameraStreamRef = useRef<MediaStream | null>(null)
   const proctoringWsRef = useRef<WebSocket | null>(null)
   const detectIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const landmarkerRef = useRef<FaceLandmarker | null>(null)
-  const lastVideoTimeRef = useRef(-1)
 
   // MediaPipe models (loaded lazily on connect).
   const faceRef = useRef<any>(null)
@@ -317,39 +305,6 @@ export function useProctoring(
       }
     }
 
-    if (video.currentTime === lastVideoTimeRef.current) return
-    lastVideoTimeRef.current = video.currentTime
-
-    let result: FaceLandmarkerResult | undefined
-    try {
-      result = landmarker.detectForVideo(video, performance.now())
-    } catch {
-      return
-    }
-
-    const faces: NormalizedLandmark[][] = result?.faceLandmarks ?? []
-    let hadViolation = false
-
-    if (faces.length === 0) {
-      hadViolation = true
-      recordViolation("no_face", "medium", "No face detected in frame.")
-    } else if (faces.length > 1) {
-      hadViolation = true
-      recordViolation("multiple_faces", "high", `${faces.length} faces detected in frame.`)
-    } else {
-      const lm = faces[0]
-      const left = lm[234]
-      const right = lm[454]
-      const nose = lm[1]
-      if (left && right && nose) {
-        const span = right.x - left.x
-        if (Math.abs(span) > 1e-4) {
-          const ratio = (nose.x - left.x) / span
-          if (ratio < 0.34 || ratio > 0.66) {
-            hadViolation = true
-            recordViolation("looking_away", "low", "Candidate looking away from screen.")
-          }
-        }
     // Objects: phone, unauthorized materials, multiple people.
     const objd = objectRef.current
     if (objd) {
@@ -445,7 +400,6 @@ export function useProctoring(
 
   const connectWebSocket = useCallback(
     async (sessionId: string, _referenceImageB64: string) => {
-      if (!landmarkerRef.current) {
       // Load the MediaPipe models. Face is required; object + pose are best-effort.
       if (!faceRef.current) {
         try {
@@ -488,7 +442,8 @@ export function useProctoring(
       }
 
       // Logging WebSocket. The backend persists violations/samples for the report.
-      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
+      const apiBase =
+        process.env.NEXT_PUBLIC_API_URL ?? "https://karush2807-bodhi-backend.hf.space"
       const wsBase = apiBase.replace(/^http/, "ws")
       const token = await getToken()
       const url = `${wsBase}/api/proctoring/ws/${sessionId}${token ? `?token=${encodeURIComponent(token)}` : ""}`
@@ -503,11 +458,6 @@ export function useProctoring(
           else if (msg.type === "session_flagged") setSessionFlagged(true)
         } catch {}
       }
-
-      ws.onerror = () => {
-        console.warn("Proctoring log WS error")
-      }
-      ws.onclose = () => setProctoringActive(false)
 
       ws.onerror = () => console.warn("Proctoring log WS error")
       ws.onclose = () => setProctoringActive(false)
