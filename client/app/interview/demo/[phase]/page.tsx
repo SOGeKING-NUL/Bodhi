@@ -9,15 +9,14 @@ export default function DemoPhaseRedirect() {
   const phase = params.phase as string;
 
   useEffect(() => {
-    // Redirect to main interview page with demo query params
     router.push(`/interview?demo=true&phase=${phase}`);
   }, [phase, router]);
 
   return (
-    <div className="flex h-screen items-center justify-center">
+    <div className="flex h-screen items-center justify-center bg-[#F8F9FB]">
       <div className="text-center">
-        <div className="mb-4 h-8 w-8 animate-spin rounded-full border-4 border-white border-t-transparent mx-auto" />
-        <p className="text-zinc-400">Loading {phase} demo...</p>
+        <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
+        <p className="text-sm text-neutral-500">Loading {phase} demo…</p>
       </div>
     </div>
   );
