@@ -1,5 +1,10 @@
 import { useCallback, useRef, useState, RefObject } from "react"
 import { useAuth } from "@clerk/nextjs"
+import type {
+  FaceLandmarker,
+  FaceLandmarkerResult,
+  NormalizedLandmark,
+} from "@mediapipe/tasks-vision"
 
 interface Violation {
   violation_type: string
@@ -8,23 +13,14 @@ interface Violation {
   timestamp: string
 }
 
-// How often we run the in-browser CV detector (ms). ~1 FPS is plenty for
-// proctoring and keeps the WASM model cheap on the main thread.
 const DETECT_INTERVAL_MS = 1000
 
-// Per-type cooldown so a sustained condition (e.g. you look away for 10s) logs
-// ONE violation, not ten.
 const VIOLATION_COOLDOWN_MS = 6000
 
-// Rolling window used to compute the "violation rate" that triggers Bodhi's
-// verbal reassurance. If more than RATE_THRESHOLD of the last WINDOW detections
-// were violations, we ask Bodhi to tell the candidate to relax.
-const RATE_WINDOW = 12        // ~12s of detections
-const RATE_THRESHOLD = 0.5    // >50% of recent frames had a violation
-const ALERT_COOLDOWN_MS = 45000 // client-side guard (backend also rate-limits)
+const RATE_WINDOW = 12
+const RATE_THRESHOLD = 0.5
+const ALERT_COOLDOWN_MS = 45000
 
-// CDN-hosted WASM runtime + model. Avoids bundling large binaries; needs network
-// at runtime (fine for the hosted app / dev).
 const WASM_BASE =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm"
 const FACE_MODEL_URL =
@@ -46,16 +42,13 @@ export function useProctoring(
   const proctoringWsRef = useRef<WebSocket | null>(null)
   const detectIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // MediaPipe FaceLandmarker instance (loaded lazily on connect).
-  const landmarkerRef = useRef<any>(null)
+  const landmarkerRef = useRef<FaceLandmarker | null>(null)
   const lastVideoTimeRef = useRef(-1)
 
-  // Violation bookkeeping.
   const lastLoggedAtRef = useRef<Record<string, number>>({})
   const recentRef = useRef<boolean[]>([])
   const lastAlertAtRef = useRef(0)
 
-  // Keep the latest alert callback without forcing a reconnect.
   const onAlertRef = useRef<(() => void) | undefined>(onProctorAlert)
   onAlertRef.current = onProctorAlert
 
@@ -101,7 +94,6 @@ export function useProctoring(
     landmarkerRef.current = null
   }, [videoRef])
 
-  /** Record a violation: throttle per-type, update UI, and log to the backend. */
   const recordViolation = useCallback(
     (type: string, severity: string, message: string) => {
       const now = Date.now()
@@ -134,7 +126,6 @@ export function useProctoring(
     []
   )
 
-  /** Push the latest frame's verdict into the rolling window and maybe alert. */
   const updateRate = useCallback((hadViolation: boolean) => {
     const w = recentRef.current
     w.push(hadViolation)
@@ -150,24 +141,22 @@ export function useProctoring(
     }
   }, [])
 
-  /** Run one detection pass on the current video frame. */
   const detectOnce = useCallback(() => {
     const video = videoRef.current
     const landmarker = landmarkerRef.current
     if (!video || !landmarker || video.readyState < 2) return
 
-    // Skip if the frame hasn't advanced (avoids "timestamp mismatch" errors).
     if (video.currentTime === lastVideoTimeRef.current) return
     lastVideoTimeRef.current = video.currentTime
 
-    let result: any
+    let result: FaceLandmarkerResult | undefined
     try {
       result = landmarker.detectForVideo(video, performance.now())
     } catch {
       return
     }
 
-    const faces: any[] = result?.faceLandmarks ?? []
+    const faces: NormalizedLandmark[][] = result?.faceLandmarks ?? []
     let hadViolation = false
 
     if (faces.length === 0) {
@@ -177,8 +166,6 @@ export function useProctoring(
       hadViolation = true
       recordViolation("multiple_faces", "high", `${faces.length} faces detected in frame.`)
     } else {
-      // Single face — estimate horizontal head orientation from landmarks.
-      // 234 = right cheek edge, 454 = left cheek edge, 1 = nose tip.
       const lm = faces[0]
       const left = lm[234]
       const right = lm[454]
@@ -186,7 +173,7 @@ export function useProctoring(
       if (left && right && nose) {
         const span = right.x - left.x
         if (Math.abs(span) > 1e-4) {
-          const ratio = (nose.x - left.x) / span // ~0.5 when centered
+          const ratio = (nose.x - left.x) / span
           if (ratio < 0.34 || ratio > 0.66) {
             hadViolation = true
             recordViolation("looking_away", "low", "Candidate looking away from screen.")
@@ -200,7 +187,6 @@ export function useProctoring(
 
   const connectWebSocket = useCallback(
     async (sessionId: string, _referenceImageB64: string) => {
-      // 1) Load the MediaPipe FaceLandmarker (WASM) lazily.
       if (!landmarkerRef.current) {
         try {
           const vision = await import("@mediapipe/tasks-vision")
@@ -213,12 +199,10 @@ export function useProctoring(
         } catch (err) {
           console.warn("FaceLandmarker load failed:", err)
           setCameraError("Proctoring engine failed to load — continuing voice-only.")
-          // No CV, but don't block the interview.
           return
         }
       }
 
-      // 2) Open the logging WebSocket (backend persists violations for the report).
       const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
       const wsBase = apiBase.replace(/^http/, "ws")
       const token = await getToken()
@@ -242,12 +226,10 @@ export function useProctoring(
       }
 
       ws.onerror = () => {
-        // Logging WS failing should not kill proctoring — detection is local.
         console.warn("Proctoring log WS error")
       }
       ws.onclose = () => setProctoringActive(false)
 
-      // 3) Start the local detection loop regardless of the logging WS state.
       if (detectIntervalRef.current) clearInterval(detectIntervalRef.current)
       detectIntervalRef.current = setInterval(detectOnce, DETECT_INTERVAL_MS)
       setProctoringActive(true)
@@ -268,10 +250,6 @@ export function useProctoring(
     proctoringWsRef.current = null
   }, [])
 
-  /**
-   * Re-attach the saved camera stream to the video element after a re-render
-   * (e.g. a phase transition that remounts the <video>).
-   */
   const reattachStream = useCallback(() => {
     const video = videoRef.current
     const stream = cameraStreamRef.current
@@ -281,7 +259,6 @@ export function useProctoring(
     }
   }, [videoRef])
 
-  // Stubs for face verification compatibility
   const handleFaceViolation = useCallback(() => {}, [])
   const handleFaceFlag = useCallback(() => {}, [])
 

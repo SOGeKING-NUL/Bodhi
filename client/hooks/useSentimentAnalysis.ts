@@ -16,7 +16,7 @@ export function useSentimentAnalysis() {
   const updateFromMeta = useCallback((meta: StreamMeta) => {
     if (meta.sentiment) {
       setSentimentData({
-        emotion: meta.sentiment.hf_emotion || meta.sentiment.emotion,
+        emotion: meta.sentiment.hf_emotion || meta.sentiment.emotion || "",
         emotionConfidence: meta.sentiment.hf_confidence || 0,
         sentiment: meta.sentiment.sentiment || "neutral",
         speechRateWpm: meta.sentiment.speaking_rate_wpm || 0,
