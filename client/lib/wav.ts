@@ -1,7 +1,3 @@
-/**
- * Encode raw Float32 PCM samples into a 16-bit PCM WAV blob.
- * Output: 16kHz, mono, 16-bit — exactly what Sarvam Saaras V3 expects.
- */
 export function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   const TARGET_SR = 16000;
   const resampled =
@@ -16,12 +12,12 @@ export function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   writeString(view, 8, "WAVE");
   writeString(view, 12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, 1, true); // mono
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, TARGET_SR, true);
-  view.setUint32(28, TARGET_SR * 2, true); // byte rate
-  view.setUint16(32, 2, true); // block align
-  view.setUint16(34, 16, true); // bits per sample
+  view.setUint32(28, TARGET_SR * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
   writeString(view, 36, "data");
   view.setUint32(40, numSamples * 2, true);
 

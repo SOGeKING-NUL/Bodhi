@@ -1,16 +1,18 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
+type ClerkWindow = typeof window & {
+  Clerk?: { session?: { getToken: () => Promise<string | null> } };
+};
+
 export async function getAuthHeaders(initHeaders?: HeadersInit): Promise<Headers> {
   const headers = new Headers(initHeaders);
   if (typeof window !== "undefined") {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const token = await (window as any).Clerk?.session?.getToken();
+      const token = await (window as ClerkWindow).Clerk?.session?.getToken();
       if (token) {
         headers.set("Authorization", `Bearer ${token}`);
       }
     } catch {
-      // Silently continue — anonymous request
     }
   }
   return headers;
@@ -34,7 +36,6 @@ async function request<T>(
   return res.json();
 }
 
-// ── Users ───────────────────────────────────────────────
 
 export interface UserSyncResponse {
   user_id: string;
@@ -102,7 +103,6 @@ export const downloadResumeBlob = async (authToken?: string) => {
   return { blob, filename };
 };
 
-// ── Roles ────────────────────────────────────────────────
 
 export interface Role {
   id: number;
@@ -131,7 +131,6 @@ export const createRole = (data: {
 export const deleteRole = (name: string) =>
   request<void>(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" });
 
-// ── Companies ────────────────────────────────────────────
 
 export interface CompanyProfile {
   id: number;
@@ -168,7 +167,6 @@ export const deleteCompany = (name: string, role: string, experience_level: stri
     { method: "DELETE" }
   );
 
-// ── Documents ────────────────────────────────────────────
 
 export interface IngestResponse {
   chunks_ingested: number;
@@ -230,26 +228,25 @@ export const getTopics = (company: string, role: string) =>
     `/api/documents/topics?company=${encodeURIComponent(company)}&role=${encodeURIComponent(role)}`
   );
 
-// ── Resumes ──────────────────────────────────────────────
 
 export interface CandidateProfile {
   name: string;
   email: string | null;
   phone: string | null;
   summary: string | null;
-  skills: string[];
-  experience: Array<{
+  skills?: string[];
+  experience?: Array<{
     title: string;
     company: string;
     duration: string;
     description: string;
   }>;
-  education: Array<{
+  education?: Array<{
     degree: string;
     institution: string;
     year: string;
   }>;
-  projects: Array<{
+  projects?: Array<{
     name: string;
     description: string;
     technologies: string[];
@@ -277,7 +274,6 @@ export const uploadResume = (file: File, authToken?: string) => {
 export const getResumeProfile = (userId: string) =>
   request<CandidateProfile>(`/api/resumes/${userId}`);
 
-// ── Interviews ───────────────────────────────────────────
 
 export interface InterviewStart {
   session_id: string;
@@ -314,10 +310,12 @@ export const prepareInterview = (data: {
   company?: string;
   role?: string;
   experience_level?: string;
-  mode?: "standard" | "option_a";
+  mode?: "standard" | "option_a" | "option_b";
   user_id?: string;
   jd_text?: string;
   interviewer_persona?: "bodhi" | "riya";
+  demo_mode?: boolean;
+  demo_phase?: string;
 }) =>
   request<InterviewPrepare>("/api/interviews/prepare", {
     method: "POST",
@@ -362,20 +360,26 @@ export const getSession = (sessionId: string) =>
 export const endInterview = (sessionId: string) =>
   request<SessionEnd>(`/api/interviews/${sessionId}/end`, { method: "POST" });
 
-// ── Streaming endpoints ─────────────────────────────────────────
 
-/** Parsed metadata from streaming response headers. */
+export interface SentimentMeta {
+  emotion?: string;
+  hf_emotion?: string;
+  hf_confidence?: number;
+  sentiment?: string;
+  speaking_rate_wpm?: number;
+  confidence_score?: number;
+  flags?: string[];
+}
+
 export interface StreamMeta {
   session?: string;
   text?: string;
   transcript?: string;
   phase?: string;
   shouldEnd?: boolean;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  sentiment?: Record<string, any>;
+  sentiment?: SentimentMeta;
 }
 
-/** Extract X-Bodhi-* headers from a streaming response, URL-decoding values. */
 export function parseStreamHeaders(res: Response): StreamMeta {
   const d = (key: string) => {
     const v = res.headers.get(`X-Bodhi-${key}`);
@@ -388,7 +392,6 @@ export function parseStreamHeaders(res: Response): StreamMeta {
     try {
       sentiment = JSON.parse(rawSentiment);
     } catch {
-      // ignore malformed sentiment header
     }
   }
 
@@ -402,7 +405,6 @@ export function parseStreamHeaders(res: Response): StreamMeta {
   };
 }
 
-/** Start interview, returning a raw streaming Response (audio/mpeg). */
 export const startInterviewStream = async (data: {
   candidate_name?: string;
   company?: string;
@@ -417,7 +419,6 @@ export const startInterviewStream = async (data: {
 }) => {
   const headers = await getAuthHeaders({ "Content-Type": "application/json" });
   
-  // Use demo endpoint if demo_mode is true
   if (data.demo_mode && data.demo_phase) {
     return fetch(`${BASE}/api/interviews/demo/${data.demo_phase}/start-stream`, {
       method: "POST",
@@ -432,7 +433,6 @@ export const startInterviewStream = async (data: {
   });
 };
 
-/** Send text message and receive streaming audio response. */
 export const sendMessageStream = async (sessionId: string, text: string) => {
   const headers = await getAuthHeaders({ "Content-Type": "application/json" });
   return fetch(`${BASE}/api/interviews/${sessionId}/message-stream`, {
@@ -442,7 +442,6 @@ export const sendMessageStream = async (sessionId: string, text: string) => {
   });
 };
 
-/** Send audio blob and receive streaming audio response. */
 export const sendAudioStream = async (
   sessionId: string,
   blob: Blob,
@@ -463,7 +462,6 @@ export const sendAudioStream = async (
 };
 
 
-// ── Interview Reports ────────────────────────────────────
 
 export interface InterviewReport {
   overall_grade: string;
@@ -513,8 +511,7 @@ export interface InterviewReport {
     total_data_points: number;
   };
   hiring_recommendation: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  custom_metric_scores?: Record<string, any>;
+  custom_metric_scores?: Record<string, unknown>;
   session_info: {
     candidate_name: string;
     target_company: string;
@@ -530,8 +527,7 @@ export const downloadReportPDF = async (sessionId: string) => {
   const headers = new Headers();
   if (typeof window !== "undefined") {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const token = await (window as any).Clerk?.session?.getToken();
+      const token = await (window as ClerkWindow).Clerk?.session?.getToken();
       if (token) headers.set("Authorization", `Bearer ${token}`);
     } catch {}
   }
@@ -558,15 +554,12 @@ export const downloadReportPDF = async (sessionId: string) => {
 };
 
 
-// ── Demo Mode ────────────────────────────────────────────
 
-/** Start a demo interview locked to a specific phase. */
 export const startDemoInterviewStream = async (phase: string) => {
   const headers = new Headers();
   if (typeof window !== "undefined") {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const token = await (window as any).Clerk?.session?.getToken();
+      const token = await (window as ClerkWindow).Clerk?.session?.getToken();
       if (token) headers.set("Authorization", `Bearer ${token}`);
     } catch {}
   }
