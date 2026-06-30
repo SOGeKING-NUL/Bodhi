@@ -73,11 +73,8 @@ async def proctoring_websocket(websocket: WebSocket, session_id: str):
         await websocket.close(code=1008, reason="Not authorized for this session")
         return
 
-    # If the CV models aren't loaded (PROCTORING_ENABLED=false or a load failure),
-    # do NOT import the CV stack here — importing mediapipe/etc on connect can
-    # SIGSEGV the worker. Instead run a lightweight "browser-CV" mode: detection
-    # happens in the candidate's browser (MediaPipe WASM) and the client reports
-    # violations here purely for persistence/report. No CV import, no segfault.
+    # No server-side models: run browser-CV mode. Don't import the CV stack here
+    # (importing mediapipe on connect can segfault the worker).
     if getattr(app_state, "face_detector", None) is None:
         await _run_browser_proctoring(websocket, session_id, storage)
         return
@@ -157,13 +154,7 @@ _BROWSER_FLAG_THRESHOLD = 8
 
 
 async def _run_browser_proctoring(websocket: WebSocket, session_id: str, storage) -> None:
-    """Lightweight proctoring loop for when server-side CV is disabled.
-
-    Computer vision runs in the candidate's browser (MediaPipe Tasks for Web,
-    WASM). The browser streams `client_violation` messages here; we persist them
-    to the violations table so they appear in the post-interview report. This
-    path never imports mediapipe/torch, so it cannot SIGSEGV the worker.
-    """
+    """Persist violations/behavioral samples detected in the browser (no server CV)."""
     await websocket.accept()
     try:
         await websocket.send_text(
@@ -222,9 +213,21 @@ async def _run_browser_proctoring(websocket: WebSocket, session_id: str, storage
                         "summary": {"total_violations": violation_count},
                     }))
 
+            elif msg_type == "client_behavioral":
+                # Facial emotion / posture / gaze sample from the browser.
+                if storage:
+                    try:
+                        storage.save_sentiment_data(
+                            session_id,
+                            emotion=(message.get("emotion") or None),
+                            posture=(message.get("posture") or None),
+                            gaze_direction=(message.get("gaze_direction") or None),
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to save behavioral sample: {e}")
+
             elif msg_type == "frame":
-                # Browser does its own CV now — ignore any legacy frame uploads
-                # but ACK so the client loop stays healthy.
+                # Legacy frame uploads; CV is browser-side now, so just ACK.
                 await websocket.send_text(_dumps({
                     "type": "frame_result", "has_violations": False,
                     "violations": [], "session_flagged": False,

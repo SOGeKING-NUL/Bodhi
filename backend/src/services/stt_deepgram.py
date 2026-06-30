@@ -119,6 +119,9 @@ class DeepgramStreamingSTT:
             "smart_format": "true",
             "punctuate": "true",
             "keepalive": "true",
+            # Keep "uh"/"um" in the transcript so behavioral filler-rate scoring
+            # can see them (Deepgram strips them by default).
+            "filler_words": "true",
         })
         url = f"{self.WS_URL}?{params}"
         headers = {"Authorization": f"Token {self.api_key}"}

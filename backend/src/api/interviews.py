@@ -879,8 +879,10 @@ async def interview_websocket(
     session_stt: "DeepgramStreamingSTT | None" = None
     pipeline_task: asyncio.Task | None = None
 
-    # Verbal-reassurance ("relax") state — triggered by high proctoring violation
-    # rate. Cooldown prevents Bodhi from nagging.
+    # Set on the first partial of a turn, used to measure speaking duration.
+    turn_speech_start: float | None = None
+
+    # "Relax" line state, triggered when proctoring reports a high violation rate.
     last_reassure_at = 0.0
     reassure_idx = 0
     REASSURE_COOLDOWN_SEC = 60.0
@@ -970,7 +972,24 @@ async def interview_websocket(
         })
 
         # ── One user turn: transcript → graph tokens → TTS audio ─────────
-        async def run_turn(transcript: str) -> None:
+        async def run_turn(transcript: str, speech_duration: float = 0.0) -> None:
+            behavioral: dict = {}
+            try:
+                from src.services.behavioral import compute_speech_behavioral
+                behavioral = compute_speech_behavioral(transcript, speech_duration)
+                if storage:
+                    await asyncio.to_thread(
+                        storage.save_sentiment_data,
+                        session_id,
+                        sentiment=behavioral.get("sentiment"),
+                        confidence_score=behavioral.get("confidence_score"),
+                        speaking_rate_wpm=behavioral.get("speaking_rate_wpm"),
+                        filler_rate=behavioral.get("filler_rate"),
+                        flags=behavioral.get("flags") or None,
+                    )
+            except Exception as exc:
+                _stream_log.warning("behavioral metrics failed: %s", exc)
+
             async def on_token(token: str):
                 try:
                     await websocket.send_json({"type": "control", "event": "text_chunk", "text": token})
@@ -1008,16 +1027,13 @@ async def interview_websocket(
                 "text": result_holder.get("reply_text"),
                 "phase": phase,
                 "should_end": should_end,
-                "sentiment": {},  # per-turn audio analysis deferred
+                "sentiment": behavioral,  # WPM / filler / confidence / tone
             })
 
             if should_end:
                 try:
                     state_dict = graph.get_state(graph_config).values
-                    # Generate + persist the report so /report/{id} isn't a 404.
-                    # _flush_session_sync is blocking (LLM report gen + DB writes)
-                    # so run it off the event loop. Best-effort: never let report
-                    # failure stop the socket from closing.
+                    # Generate + persist the report (blocking) before closing.
                     try:
                         await asyncio.to_thread(
                             _flush_session_sync, session_id, state_dict, storage, cache
@@ -1039,18 +1055,26 @@ async def interview_websocket(
 
         # ── Deepgram callbacks ───────────────────────────────────────────
         async def on_interim(text: str) -> None:
-            # Surface partials as the existing transcript event (live display).
+            nonlocal turn_speech_start
+            if turn_speech_start is None and text.strip():
+                turn_speech_start = asyncio.get_running_loop().time()
             await websocket.send_json({"type": "control", "event": "interim_transcript", "text": text})
 
         async def on_utterance_end(transcript: str) -> None:
-            nonlocal pipeline_task
+            nonlocal pipeline_task, turn_speech_start
             transcript = (transcript or "").strip()
             if not transcript:
                 return
+            # duration = first partial to now, minus Deepgram's trailing silence.
+            speech_duration = 0.0
+            if turn_speech_start is not None:
+                elapsed = asyncio.get_running_loop().time() - turn_speech_start
+                speech_duration = max(0.0, elapsed - session_stt.utterance_end_ms / 1000.0)
+            turn_speech_start = None
             # Safety: cancel any still-running prior turn.
             await _cancel_pipeline()
             await websocket.send_json({"type": "control", "event": "transcript", "text": transcript})
-            pipeline_task = asyncio.create_task(run_turn(transcript))
+            pipeline_task = asyncio.create_task(run_turn(transcript, speech_duration))
 
         await session_stt.connect(
             on_interim=on_interim,
@@ -1111,8 +1135,7 @@ async def interview_websocket(
                     await websocket.send_json({"type": "control", "event": "interrupted"})
 
                 elif msg_type == "proctor_alert":
-                    # Frontend (browser-side CV) reports a high violation rate →
-                    # Bodhi verbally reassures the candidate. Cooldown applies.
+                    # Browser CV saw a high violation rate; Bodhi reassures (cooldown).
                     await speak_reassurance()
 
                 elif msg_type == "ping":
@@ -1237,11 +1260,8 @@ async def _llm_tts_pipeline(graph, graph_config, user_input, sarvam_key: str, sp
                         output = event.get("data", {}).get("output")
                         tool_calls = getattr(output, "tool_calls", None) if output is not None else None
                         if not tool_calls:
-                            # Prefer streamed tokens; fall back to the model's full
-                            # output when invoked non-streaming (Gemini's
-                            # generateContent emits no on_chat_model_stream events,
-                            # so pending_text would be empty and the turn would
-                            # silently produce no audio).
+                            # Use streamed tokens, or the full output if the model
+                            # ran non-streaming (no on_chat_model_stream events).
                             texts = pending_text
                             if not texts and output is not None and hasattr(output, "content"):
                                 full = _extract_text(output.content)
@@ -1317,23 +1337,15 @@ async def _pipeline_audio_generator(graph, graph_config, user_input, sarvam_key,
 
 
 async def _session_pipeline_audio(graph, graph_config, user_input, tts, result_holder: dict, token_callback=None):
-    """One interview turn → raw PCM-16 audio over a *persistent* TTS WS.
+    """Run one turn via graph.invoke and stream the reply to the persistent TTS WS.
 
-    The interviewer node is a SYNC function, and LangGraph runs sync nodes in a
-    threadpool. The chat-model callbacks that `graph.astream_events()` relies on
-    do NOT propagate into that thread, so astream_events emits `on_chain_start`
-    for the node but never `on_chat_model_*` — the reply text is invisible to the
-    event stream and nothing reaches TTS (the turn "freezes"). Since the model is
-    invoked non-streaming anyway (Gemini generateContent), there is no token
-    stream to lose: we run the turn to completion with `graph.invoke()` (in a
-    thread, exactly like the greeting), pull the final reply from the result
-    state, then stream it sentence-by-sentence through the persistent TTS WS.
-
-    Final metadata (reply_text/phase/should_end) is stored in `result_holder`.
+    We use invoke (not astream_events) because the interviewer node is sync and
+    runs in a threadpool, where the chat-model callbacks astream_events needs
+    never fire, so the reply would never reach TTS. Gemini is non-streaming
+    anyway, so there's no token stream to lose.
     """
     from src.services.tts import split_sentences
 
-    # Run the full turn to completion off the event loop.
     result = await asyncio.to_thread(
         graph.invoke,
         {"messages": [HumanMessage(content=user_input)]},
