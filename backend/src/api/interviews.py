@@ -217,8 +217,14 @@ def _seniority_to_difficulty(candidate_profile: dict, explicit_level: str = "") 
 _CURRICULUM_PROMPT = """\
 You are an expert technical interviewer preparing a custom interview curriculum.
 Generate exactly 2 targeted questions for each of the following 2 phases for a {role} at {company}.
-The candidate's experience level is: {experience_level}. Tailor the difficulty, expectations, and nature of the questions accordingly.
-Use the provided company profile and job description to make the questions highly specific and realistic.
+The candidate's experience level is: {experience_level}. This is a HARD constraint, not a hint:
+- intern / fresher / junior: fundamentals and understanding only. Do NOT ask deep optimization,
+  production-scale, failure-mode, or architecture-design questions — even if the JD lists advanced
+  tooling. Ask what things are and why they're used, not how to tune them at scale.
+- mid: hands-on usage, real trade-offs, everyday debugging.
+- senior / staff / lead: system design, scale, optimization, and architectural judgement.
+Use the provided company profile and job description to make the questions specific and realistic,
+but never exceed the difficulty appropriate for the stated experience level.
 
 COMPANY PROFILE:
 {profile_text}
@@ -233,8 +239,24 @@ Each key must contain a list of exactly 2 question strings.
 DO NOT include any markdown blocks (like ```json), just raw JSON.
 """
 
-def generate_interview_curriculum(company: str, role: str, experience_level: str, storage: BodhiStorage, jd_text: str = "") -> dict:
-    """Generate 2 technical + 2 DSA pre-decided questions based on company profile and JD."""
+def generate_interview_curriculum(
+    company: str,
+    role: str,
+    experience_level: str,
+    storage: BodhiStorage,
+    jd_text: str = "",
+    candidate_profile: dict | None = None,
+    gap_map: dict | None = None,
+) -> dict:
+    """Generate 2 technical + 2 DSA pre-decided questions based on company profile and JD.
+
+    When jd_text names concrete technologies (Docker, CI/CD, AWS ELB, ...), those are
+    extracted and matched against a reusable topic_questions cache (research once, reuse
+    across every candidate who hits that topic) instead of asking the LLM to invent
+    generic technical questions from scratch every time. gap_map (resume vs JD) — if
+    available — picks the question depth per topic: verify claimed strengths deeply,
+    go easy on topics the candidate never claimed.
+    """
     from src.services.llm import create_llm, _extract_text
     from langchain_core.messages import HumanMessage
     import json
@@ -301,11 +323,31 @@ def generate_interview_curriculum(company: str, role: str, experience_level: str
         if jd_text:
             log.info(f"  JD context: YES ({len(jd_text)} chars)")
         log.info("==================================================")
-        
-        return result
+
     except Exception as e:
         log.error(f"Curriculum generation failed: {e}")
-        return {"technical": [], "dsa": []}
+        result = {"technical": [], "dsa": []}
+
+    if jd_text and jd_text.strip():
+        try:
+            from src.rag import extract_jd_topics, get_topic_questions, tier_for_topic
+            topics = extract_jd_topics(jd_text)
+            jd_questions: list[str] = []
+            for topic in topics:
+                tier = tier_for_topic(
+                    topic, gap_map,
+                    experience_level=experience_level,
+                    candidate_profile=candidate_profile,
+                )
+                jd_questions.extend(get_topic_questions(topic, storage, tier=tier, limit=2))
+            if jd_questions:
+                # JD-specific topics take priority over the generic technical Qs above.
+                result["technical"] = (jd_questions + result.get("technical", []))[:6]
+                log.info(f"  JD topics: {topics} -> {len(jd_questions)} cached/generated questions")
+        except Exception as e:
+            log.error(f"JD topic question lookup failed: {e}")
+
+    return result
 
 
 @router.post("/prepare", response_model=InterviewPrepareResponse, status_code=201)
@@ -336,7 +378,10 @@ async def prepare_interview(
     # Pre-generate curriculum (2 technical + 2 DSA questions) unless in resume-based mode
     curriculum = {}
     if body.mode != "option_a":
-        curriculum = generate_interview_curriculum(body.company, body.role, experience_level_used, storage, jd_text=body.jd_text)
+        curriculum = generate_interview_curriculum(
+            body.company, body.role, experience_level_used, storage, jd_text=body.jd_text,
+            candidate_profile=candidate_profile, gap_map=gap_map,
+        )
         if cache:
             for phase, questions in curriculum.items():
                 cache.set_question_queue(session_id, phase, questions)
@@ -419,7 +464,10 @@ async def start_interview(
     # Pre-generate curriculum (2 technical + 2 DSA questions) unless in resume-based mode
     curriculum = {}
     if body.mode != "option_a":
-        curriculum = generate_interview_curriculum(body.company, body.role, experience_level_used, storage, jd_text=body.jd_text)
+        curriculum = generate_interview_curriculum(
+            body.company, body.role, experience_level_used, storage, jd_text=body.jd_text,
+            candidate_profile=candidate_profile, gap_map=gap_map,
+        )
         if cache:
             for phase, questions in curriculum.items():
                 cache.set_question_queue(session_id, phase, questions)
@@ -1006,6 +1054,23 @@ async def interview_websocket(
             except asyncio.CancelledError:
                 # Barge-in: turn was interrupted — drop it silently.
                 raise
+            except Exception as exc:
+                # graph.invoke() (Gemini call) or the TTS stream blew past its own
+                # retries. Previously this exception died silently in the
+                # background task — the socket stayed open but nothing further
+                # was ever sent, so the session just went dead mid-interview.
+                # Always surface *something* so the client can recover instead
+                # of waiting forever for a reply that will never come.
+                _stream_log.error("[WS-PIPE] Turn failed: %s", exc, exc_info=True)
+                try:
+                    await websocket.send_json({
+                        "type": "control",
+                        "event": "turn_error",
+                        "text": "Sorry, I didn't quite catch that — could you say it again?",
+                    })
+                except Exception:
+                    pass
+                return
 
             phase = result_holder.get("phase", "unknown")
             should_end = result_holder.get("should_end", False)
@@ -1433,7 +1498,10 @@ async def start_interview_stream(
     # Pre-generate curriculum (2 technical + 2 DSA questions)
     _stream_log.info("[START-STREAM] Session %s: generating curriculum...", session_id)
     curriculum = await loop.run_in_executor(
-        None, lambda: generate_interview_curriculum(body.company, body.role, storage, jd_text=body.jd_text)
+        None, lambda: generate_interview_curriculum(
+            body.company, body.role, body.experience_level, storage, jd_text=body.jd_text,
+            candidate_profile=candidate_profile, gap_map=gap_map,
+        )
     )
     if cache:
         for phase, questions in curriculum.items():
@@ -2159,7 +2227,7 @@ async def start_demo_interview_stream(
     curriculum = {}
     if phase in ["technical", "dsa"]:
         full_curriculum = await loop.run_in_executor(
-            None, lambda: generate_interview_curriculum(company, role, storage)
+            None, lambda: generate_interview_curriculum(company, role, "Mid-Level", storage)
         )
         if phase in full_curriculum:
             curriculum[phase] = full_curriculum[phase]

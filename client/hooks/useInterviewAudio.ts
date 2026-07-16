@@ -186,6 +186,7 @@ export function useInterviewAudio() {
       onPartialReply: (chunk: string) => void,
       onReplyComplete: (text: string, phase: string, shouldEnd: boolean, sentiment?: SentimentMeta) => void,
       onError: (err: string) => void,
+      onTurnError?: (text: string) => void,
       onPlaybackStart: () => void,
       onPlaybackComplete: () => void
     }
@@ -231,6 +232,11 @@ export function useInterviewAudio() {
           case "reply_complete":
             await seamlessAudio.flush()
             callbacks.onReplyComplete(msg.text, msg.phase, msg.should_end, msg.sentiment)
+            break
+          case "turn_error":
+            // Recoverable — the socket is still open, just this one turn failed.
+            // Distinct from onError, which is for fatal connection-level failures.
+            callbacks.onTurnError?.(msg.text)
             break
           default:
             break

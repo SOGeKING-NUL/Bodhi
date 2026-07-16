@@ -179,6 +179,193 @@ def extract_profile_data(
         return {"description": "", "tech_stack": "", "hiring_patterns": ""}
 
 
+_TOPIC_ALIASES = {
+    "aws elb": "aws-elb", "elastic load balancer": "aws-elb", "aws load balancer": "aws-elb",
+    "elb": "aws-elb",
+    "ci/cd": "ci-cd", "cicd": "ci-cd", "continuous integration": "ci-cd",
+    "continuous deployment": "ci-cd", "continuous delivery": "ci-cd",
+    "message queue": "message-queues", "message queues": "message-queues", "mq": "message-queues",
+    "k8s": "kubernetes",
+}
+
+
+def _normalize_topic(raw: str) -> str:
+    """Collapse common phrasing variants onto one canonical topic key.
+
+    ponytail: exact-key + small alias map only, no embedding-based topic
+    dedup — add that if paraphrase misses become common in practice.
+    """
+    key = raw.strip().lower().strip(".,;:")
+    return _TOPIC_ALIASES.get(key, key)
+
+
+_TOPIC_EXTRACTION_PROMPT = """\
+You are analyzing a job description to extract concrete technical topics an interviewer \
+should test a candidate on.
+
+List 4-8 SPECIFIC technologies, tools, or practices explicitly required or strongly implied \
+by this JD (e.g. "docker", "ci-cd", "aws-elb", "typescript", "message-queues") — NOT generic \
+terms like "programming", "problem solving", or "communication".
+
+JOB DESCRIPTION:
+{jd_text}
+
+Output ONLY a JSON array of lowercase, hyphenated topic strings. No markdown, no commentary.
+Example: ["docker", "ci-cd", "aws-elb", "typescript"]
+"""
+
+
+def extract_jd_topics(jd_text: str) -> list[str]:
+    """Extract normalized, concrete technical topics from a job description."""
+    if not jd_text or not jd_text.strip():
+        return []
+
+    import json
+    import re
+    from src.services.llm import create_llm, _extract_text
+    from langchain_core.messages import HumanMessage
+
+    llm = create_llm(api_key=os.getenv("GOOGLE_API_KEY", ""))
+    prompt = _TOPIC_EXTRACTION_PROMPT.format(jd_text=jd_text[:4000])
+    response = llm.invoke([HumanMessage(content=prompt)])
+    raw = _extract_text(response.content).strip()
+
+    match = re.search(r'\[.*\]', raw, re.DOTALL)
+    if match:
+        raw = match.group(0)
+    try:
+        topics = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(topics, list):
+        return []
+    return [_normalize_topic(t) for t in topics if isinstance(t, str) and t.strip()][:8]
+
+
+_TOPIC_QUESTIONS_PROMPT = """\
+Generate technical interview questions about "{topic}" for a software engineering interview.
+
+The three tiers MUST be clearly separated by difficulty — a beginner should be able to
+answer the conceptual questions, and only an experienced engineer should be expected to
+answer the expert ones. Produce exactly 2 questions per tier:
+- "conceptual": for someone who has only read/heard about {topic} and never used it in
+  production. Ask what it is, why/when it's used, basic terminology. NO deep optimization,
+  scale, tuning, or architecture questions here.
+- "practical": for someone with hands-on experience — real usage scenarios, common
+  trade-offs, everyday debugging.
+- "expert": for a senior engineer — failure modes at scale, performance optimization,
+  edge cases, architectural decisions.
+
+Output ONLY valid JSON with exactly these 3 keys, each a list of exactly 2 question strings:
+{{"conceptual": ["Q1", "Q2"], "practical": ["Q1", "Q2"], "expert": ["Q1", "Q2"]}}
+No markdown, no commentary.
+"""
+
+
+def _generate_topic_questions(topic: str) -> dict[str, list[str]]:
+    """One-time LLM generation of a tiered question set for a topic (cache miss path)."""
+    import json
+    import re
+    from src.services.llm import create_llm, _extract_text
+    from langchain_core.messages import HumanMessage
+
+    llm = create_llm(api_key=os.getenv("GOOGLE_API_KEY", ""))
+    prompt = _TOPIC_QUESTIONS_PROMPT.format(topic=topic)
+    response = llm.invoke([HumanMessage(content=prompt)])
+    raw = _extract_text(response.content).strip()
+
+    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    if match:
+        raw = match.group(0)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"conceptual": [], "practical": [], "expert": []}
+
+    return {
+        tier: [q for q in data.get(tier, []) if isinstance(q, str) and q.strip()][:2]
+        for tier in ("conceptual", "practical", "expert")
+    }
+
+
+def get_topic_questions(topic: str, storage: "BodhiStorage", tier: str = "practical", limit: int = 2) -> list[str]:
+    """Cache-or-generate lookup: reuse a topic's question bank across every
+    candidate who hits that topic, instead of re-generating (and re-researching)
+    it per interview. Miss once per topic, hit forever after."""
+    key = _normalize_topic(topic)
+
+    cached = storage.get_topic_questions(key, tier=tier, limit=limit)
+    if cached:
+        return [row["question"] for row in cached]
+
+    generated = _generate_topic_questions(key)
+    rows = [(q, t) for t, qs in generated.items() for q in qs]
+    if rows:
+        storage.insert_topic_questions(key, rows)
+
+    return generated.get(tier, [])[:limit]
+
+
+_TIER_ORDER = ["conceptual", "practical", "expert"]
+
+
+def _seniority_cap(experience_level: str, candidate_profile: dict | None) -> int:
+    """Highest tier index (into _TIER_ORDER) a candidate of this seniority should
+    ever be asked. This is the hard fix for interns getting staff-level questions:
+    an intern is capped at 'conceptual' no matter what the JD or gap map says.
+    """
+    level = (experience_level or "").lower()
+    if any(k in level for k in ("intern", "fresher", "entry", "junior")):
+        return 0
+    if any(k in level for k in ("senior", "staff", "principal", "lead", "executive")):
+        return 2
+    if candidate_profile:
+        sen = (candidate_profile.get("seniority_level") or "").lower()
+        if sen in ("intern", "junior"):
+            return 0
+        if sen in ("senior", "staff", "principal", "executive"):
+            return 2
+    return 1  # mid-level default
+
+
+def tier_for_topic(
+    topic: str,
+    gap_map: dict | None,
+    experience_level: str = "",
+    candidate_profile: dict | None = None,
+) -> str:
+    """Pick question depth for a topic, bounded by BOTH the candidate's seniority
+    and the resume/JD gap analysis.
+
+    Seniority sets a hard ceiling (an intern never exceeds 'conceptual'); within
+    that ceiling the gap map decides:
+      gaps          -> conceptual (never claimed it — awareness check only)
+      partial_match -> practical
+      strong_match  -> expert (claimed strength — verify real depth)
+      unmatched / no gap data -> the seniority default
+    Final tier = min(seniority ceiling, gap suggestion), so the lower of the two wins.
+    """
+    cap = _seniority_cap(experience_level, candidate_profile)
+
+    suggested = cap  # no gap data → use the full seniority allowance
+    if gap_map:
+        topic_words = topic.replace("-", " ").lower()
+
+        def _mentions(skills: list[str]) -> bool:
+            return any(topic_words in s.lower() or s.lower() in topic_words for s in (skills or []))
+
+        if _mentions(gap_map.get("gaps")):
+            suggested = 0
+        elif _mentions(gap_map.get("partial_match")):
+            suggested = 1
+        elif _mentions(gap_map.get("strong_match")):
+            suggested = 2
+        else:
+            suggested = cap
+
+    return _TIER_ORDER[min(cap, suggested)]
+
+
 _EXTRACT_PROMPT = """\
 You are an analyst extracting company-specific intelligence from an interview transcript.
 

@@ -1,11 +1,12 @@
-"""Gemini LLM via LangChain."""
+"""Chat LLM via LangChain."""
 
 import os
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+# from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-# Bound every LLM call so a hung/slow Gemini request can't block a turn forever.
+# Bound every LLM call so a hung/slow request can't block a turn forever.
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "90"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
 
@@ -14,11 +15,27 @@ Keep responses concise and conversational—suitable for voice playback.
 Respond in the same language style the user uses when possible."""
 
 
-def create_llm(api_key: str, model: str = "gemini-3.1-flash-lite-preview") -> ChatGoogleGenerativeAI:
-    """Create a Gemini chat model."""
-    return ChatGoogleGenerativeAI(
-        model=model,
-        google_api_key=api_key,
+def create_llm(api_key: str, model: str = "gemini-3.1-flash-lite-preview"):
+    """Create the interview chat model.
+
+    # ponytail: temporarily routed through OpenRouter — GOOGLE_API_KEY is out of
+    # credits. `api_key`/`model` args from Gemini-era call sites are ignored here;
+    # every caller goes through this one function, so this is the only file that
+    # needed to change. Revert by uncommenting the block below and restoring the
+    # return statement once Gemini credits are back.
+    #
+    # return ChatGoogleGenerativeAI(
+    #     model=model,
+    #     google_api_key=api_key,
+    #     temperature=0.7,
+    #     timeout=LLM_TIMEOUT_SEC,
+    #     max_retries=LLM_MAX_RETRIES,
+    # )
+    """
+    return ChatOpenAI(
+        model=os.getenv("OPENROUTER_MODEL", "anthropic/claude-haiku-4.5"),
+        api_key=os.getenv("OPENROUTER_API_KEY", ""),
+        base_url="https://openrouter.ai/api/v1",
         temperature=0.7,
         timeout=LLM_TIMEOUT_SEC,
         max_retries=LLM_MAX_RETRIES,

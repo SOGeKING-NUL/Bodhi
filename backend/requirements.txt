@@ -6,6 +6,8 @@
 sarvamai>=0.1.0
 langchain>=0.3.0
 langchain-google-genai>=2.0.0
+# Chat LLM temporarily routed through OpenRouter (OpenAI-compatible) — see services/llm.py
+langchain-openai>=0.2.0
 langgraph>=0.2.0
 # Durable interview state (PostgresSaver). Falls back to in-memory if absent.
 langgraph-checkpoint-postgres>=2.0.0

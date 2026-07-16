@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS company_documents (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS topic_questions (
+    id              SERIAL PRIMARY KEY,
+    topic           TEXT NOT NULL,
+    question        TEXT NOT NULL,
+    tier            TEXT NOT NULL DEFAULT 'practical',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS role_profiles (
     id              SERIAL PRIMARY KEY,
     role_name       TEXT NOT NULL UNIQUE,
@@ -110,6 +118,7 @@ CREATE TABLE IF NOT EXISTS sentiment_data (
     timestamp           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_topic_questions_topic ON topic_questions(LOWER(topic));
 CREATE INDEX IF NOT EXISTS idx_transcripts_session ON transcripts(session_id);
 CREATE INDEX IF NOT EXISTS idx_entities_company ON entities(company_name);
 CREATE INDEX IF NOT EXISTS idx_company_docs_lookup ON company_documents(company_name, role);
@@ -599,6 +608,44 @@ class BodhiStorage:
                 (emb_str, company_name, role, role, emb_str, top_k),
             )
             return [dict(row) for row in cur.fetchall()]
+
+    # ── Topic question bank (JD-driven, cached across candidates) ──────────────
+
+    def get_topic_questions(self, topic: str, tier: str | None = None, limit: int = 4) -> list[dict]:
+        """Cache lookup: questions already generated for this topic (+ optional tier).
+        Ordered randomly so repeat candidates on the same topic don't hear an
+        identical set every time."""
+        self._ensure_conn()
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if tier:
+                cur.execute(
+                    "SELECT question, tier FROM topic_questions "
+                    "WHERE LOWER(topic) = LOWER(%s) AND tier = %s "
+                    "ORDER BY random() LIMIT %s",
+                    (topic, tier, limit),
+                )
+            else:
+                cur.execute(
+                    "SELECT question, tier FROM topic_questions "
+                    "WHERE LOWER(topic) = LOWER(%s) "
+                    "ORDER BY random() LIMIT %s",
+                    (topic, limit),
+                )
+            return [dict(row) for row in cur.fetchall()]
+
+    def insert_topic_questions(self, topic: str, rows: list[tuple[str, str]]) -> int:
+        """Insert freshly-generated (question, tier) pairs for a topic. Returns rows inserted."""
+        if not rows:
+            return 0
+        self._ensure_conn()
+        values = [(topic, question, tier) for question, tier in rows]
+        with self.conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO topic_questions (topic, question, tier) VALUES %s",
+                values,
+            )
+        return len(values)
 
     # ── Role profiles ─────────────────────────────────────────────────────────
 

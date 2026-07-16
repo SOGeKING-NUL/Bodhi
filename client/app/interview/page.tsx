@@ -185,6 +185,11 @@ export default function InterviewPage() {
           setError(err);
           setPhase("idle");
         },
+        onTurnError: (text) => {
+          setTranscript((prev) => [...prev, { speaker: "bodhi", text }]);
+          setInterimTranscript("");
+          audio.startListening(() => setPhase("listening"));
+        },
         onPlaybackStart: () => {
           setInterimTranscript("");
           setPhase("speaking");
