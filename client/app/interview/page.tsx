@@ -35,8 +35,12 @@ export default function InterviewPage() {
   const [formData, setFormData] = useState<InterviewFormData | null>(null);
   const [demoMode, setDemoMode] = useState(false);
   const [demoPhase, setDemoPhase] = useState("");
-  const [, setEditorContent] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
+
+  // Editor content is held in a ref (not state) so per-keystroke typing never
+  // re-renders this page, which owns the WebSocket, audio pipeline and transcript.
+  const editorContentRef = useRef("");
+  const editorSendTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -51,6 +55,18 @@ export default function InterviewPage() {
   const handleProctorAlert = useCallback(() => {
     audio.sendControl({ type: "proctor_alert" });
   }, [audio]);
+  const handleEditorContentChange = useCallback(
+    (content: string) => {
+      editorContentRef.current = content;
+      // Debounce: push to the backend a few times/sec at most, not per keystroke.
+      // The server only reads the cached value once per turn (at end-of-speech).
+      if (editorSendTimer.current) clearTimeout(editorSendTimer.current);
+      editorSendTimer.current = setTimeout(() => {
+        audio.sendControl({ type: "editor_update", content: editorContentRef.current });
+      }, 400);
+    },
+    [audio],
+  );
   const proctoring = useProctoring(videoRef, canvasRef, handleProctorAlert);
   const sentiment = useSentimentAnalysis();
 
@@ -302,7 +318,7 @@ export default function InterviewPage() {
         violationCount={proctoring.violations.length}
         violations={proctoring.violations}
         interviewerPersona={formData?.interviewer_persona ?? "bodhi"}
-        onEditorContentChange={setEditorContent}
+        onEditorContentChange={handleEditorContentChange}
         interviewPhase={interviewPhase}
         isUserSpeaking={audio.isUserSpeaking}
         interimTranscript={interimTranscript}

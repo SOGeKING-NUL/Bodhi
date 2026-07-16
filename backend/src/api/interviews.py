@@ -930,6 +930,10 @@ async def interview_websocket(
     # Set on the first partial of a turn, used to measure speaking duration.
     turn_speech_start: float | None = None
 
+    # Latest code-editor content the client has pushed (debounced). Injected into
+    # the turn during technical/DSA phases so the interviewer can see the code.
+    latest_editor_content: str = ""
+
     # "Relax" line state, triggered when proctoring reports a high violation rate.
     last_reassure_at = 0.0
     reassure_idx = 0
@@ -1058,10 +1062,27 @@ async def interview_websocket(
                 except Exception:
                     pass
 
+            # Append the code-editor content for technical/DSA phases so the LLM
+            # actually reviews what the candidate wrote (mirrors the REST /audio path).
+            user_input = transcript
+            if latest_editor_content.strip():
+                try:
+                    state = graph.get_state(graph_config)
+                    current_phase = state.values.get("current_phase", "") if state and state.values else ""
+                    if current_phase in ("technical", "dsa"):
+                        code = latest_editor_content.strip()[:MAX_EDITOR_CHARS]
+                        user_input = f"{transcript}\n\n[Code Editor Content]:\n```\n{code}\n```"
+                        _stream_log.info(
+                            "[WS] Including editor content (%d chars) for %s phase",
+                            len(code), current_phase,
+                        )
+                except Exception as e:
+                    _stream_log.warning("Failed to attach editor content: %s", e)
+
             result_holder: dict = {}
             try:
                 async for chunk in _session_pipeline_audio(
-                    graph, graph_config, transcript, session_tts, result_holder, token_callback=on_token
+                    graph, graph_config, user_input, session_tts, result_holder, token_callback=on_token
                 ):
                     if chunk:
                         await websocket.send_bytes(chunk)
@@ -1212,6 +1233,11 @@ async def interview_websocket(
                     await session_tts.connect()
                     session_stt.reset_transcript()
                     await websocket.send_json({"type": "control", "event": "interrupted"})
+
+                elif msg_type == "editor_update":
+                    # Client pushed the latest code-editor content (debounced).
+                    # Cached here; injected into the next turn (technical/DSA only).
+                    latest_editor_content = str(data.get("content", ""))[:MAX_EDITOR_CHARS]
 
                 elif msg_type == "proctor_alert":
                     # Browser CV saw a high violation rate; Bodhi reassures (cooldown).
