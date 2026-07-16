@@ -970,11 +970,31 @@ async def interview_websocket(
         # Load messages back (we didn't store HumanMessage in Redis)
         initial_state["messages"] = [HumanMessage(content="Hello, I'm ready for my interview.")]
 
-        # First graph invocation (Greeting)
+        # ── Per-session services ─────────────────────────────────────────
+        # Created BEFORE the greeting LLM call so the TTS WebSocket handshake can
+        # be pre-warmed concurrently with generation, instead of stacking serially
+        # after it — this removes the Sarvam handshake RTT from first-audio latency.
+        persona = initial_state.get("interviewer_persona", "bodhi")
+        voice = "shreya" if persona == "riya" else "shubh"
+        session_tts = SarvamTTSStream(api_key=sarvam_key, voice=voice, sample_rate=tts_sample_rate)
+        session_stt = DeepgramStreamingSTT(api_key=deepgram_key)
+
+        # Pre-warm the Sarvam TTS connection in parallel with greeting generation.
+        tts_prewarm = asyncio.create_task(session_tts.connect()) if sarvam_key else None
+
+        # First graph invocation (Greeting) — blocking full-text generation.
         result = await asyncio.to_thread(graph.invoke, initial_state, graph_config)
         greeting = ""
         if result["messages"] and hasattr(result["messages"][-1], "content"):
             greeting = _extract_text(result["messages"][-1].content).strip()
+
+        # The handshake should be done by now; await it to surface any error (so
+        # the inline connect() below retries cleanly) and avoid a dangling task.
+        if tts_prewarm is not None:
+            try:
+                await tts_prewarm
+            except Exception as e:
+                _stream_log.warning(f"TTS pre-warm connect failed: {e!r} — retrying inline")
 
         if cache:
             cache.save_session_state(session_id, {
@@ -989,12 +1009,6 @@ async def interview_websocket(
             "event": "session_config",
             "sample_rate": tts_sample_rate,
         })
-
-        # ── Per-session services ─────────────────────────────────────────
-        persona = initial_state.get("interviewer_persona", "bodhi")
-        voice = "shreya" if persona == "riya" else "shubh"
-        session_tts = SarvamTTSStream(api_key=sarvam_key, voice=voice, sample_rate=tts_sample_rate)
-        session_stt = DeepgramStreamingSTT(api_key=deepgram_key)
 
         # ── Greeting (streamed via persistent linear16 TTS) ──────────────
         await websocket.send_json({

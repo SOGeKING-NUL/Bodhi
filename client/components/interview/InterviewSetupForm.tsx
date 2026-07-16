@@ -530,6 +530,49 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
         </>
       )}
 
+      {selectedMode === "resume" && (
+        <>
+          <Field label="Experience level" required>
+            <Select
+              required
+              value={form.experience_level}
+              onChange={(e) => setForm({ ...form, experience_level: e.target.value })}
+            >
+              <option value="Intern">Intern</option>
+              <option value="Junior">Junior</option>
+              <option value="Mid-Level">Mid-Level</option>
+              <option value="Senior">Senior</option>
+            </Select>
+          </Field>
+
+          <div className="space-y-2">
+            <Label>
+              Job description{" "}
+              <span className="font-normal text-neutral-400">(optional)</span>
+            </Label>
+            <p className="text-xs text-neutral-500">
+              When provided, the job description drives the questions — your resume is
+              used as secondary context to tailor and probe them.
+            </p>
+            <Textarea
+              rows={4}
+              placeholder="Paste the job description to tailor your questions…"
+              value={form.jd_text}
+              onChange={(e) => {
+                const jd = e.target.value;
+                setForm((prev) => ({
+                  ...prev,
+                  jd_text: jd,
+                  // JD present → JD-primary gap-analysis interview (option_b);
+                  // JD empty → fall back to pure resume-based (option_a).
+                  mode: jd.trim() ? "option_b" : "option_a",
+                }));
+              }}
+            />
+          </div>
+        </>
+      )}
+
       <div className="space-y-2">
         <Label>Choose interviewer</Label>
         <div className="grid grid-cols-2 gap-3">

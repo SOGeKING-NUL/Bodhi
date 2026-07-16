@@ -10,6 +10,14 @@ import psycopg2.extras
 import psycopg2.pool
 
 
+# Marker written to company_documents.contributed_by by the auto-extraction path
+# (rag.extract_and_contribute). Chunks tagged with this are LLM summaries of
+# candidate transcripts — untrusted, and MUST NOT be served back as company
+# intel to future candidates (that's the RAG poisoning loop). Retrieval filters
+# these out; only human/admin-uploaded docs are trusted.
+AUTO_CONTRIB_MARKER = "bodhi_auto"
+
+
 def _default_database_url() -> str:
     return os.getenv("DATABASE_URL", "")
 
@@ -591,7 +599,11 @@ class BodhiStorage:
         query_embedding: list[float],
         top_k: int = 5,
     ) -> list[dict]:
-        """Cosine-similarity search, merging role-only general docs + company-specific docs."""
+        """Cosine-similarity search, merging role-only general docs + company-specific docs.
+
+        Untrusted auto-extracted chunks (contributed_by = AUTO_CONTRIB_MARKER) are
+        excluded so candidate-derived summaries can never be served back as company
+        intel — closing the RAG poisoning loop even for rows already in the table."""
         self._ensure_conn()
         emb_str = str(query_embedding)
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -603,9 +615,10 @@ class BodhiStorage:
                 "  OR"
                 "  (company_name = 'general' AND LOWER(role) = LOWER(%s))"
                 ") "
+                "AND contributed_by IS DISTINCT FROM %s "
                 "ORDER BY embedding <=> %s::vector "
                 "LIMIT %s",
-                (emb_str, company_name, role, role, emb_str, top_k),
+                (emb_str, company_name, role, role, AUTO_CONTRIB_MARKER, emb_str, top_k),
             )
             return [dict(row) for row in cur.fetchall()]
 

@@ -387,12 +387,24 @@ def extract_and_contribute(
     transcript: str,
     storage: BodhiStorage,
 ) -> int:
-    """Use Gemini to extract company intel from a transcript, then ingest it.
-    Returns number of chunks inserted (0 if nothing extracted)."""
+    """Summarize company intel from a transcript and ingest it. Returns chunks inserted.
+
+    DISABLED BY DEFAULT. This is the RAG-poisoning source: it turns whatever a
+    candidate says during their interview into "company intel" that would be
+    retrieved for future candidates — a candidate can assert nonsense and have the
+    system treat it as fact. Even when enabled, the chunks are tagged
+    AUTO_CONTRIB_MARKER and excluded from retrieval (see search_similar_chunks),
+    so re-enabling this alone does NOT re-open the loop — a reviewed promotion
+    step would be needed. Opt in with BODHI_RAG_AUTO_CONTRIBUTE=true only if you
+    have that review in place.
+    """
+    if os.getenv("BODHI_RAG_AUTO_CONTRIBUTE", "").strip().lower() not in ("1", "true", "yes"):
+        return 0
     if not transcript or len(transcript) < 100:
         return 0
 
     from src.services.llm import create_llm, _extract_text
+    from src.storage import AUTO_CONTRIB_MARKER
     from langchain_core.messages import HumanMessage
 
     llm = create_llm(api_key=os.getenv("GOOGLE_API_KEY", ""))
@@ -408,5 +420,5 @@ def extract_and_contribute(
     return ingest_document(
         company, role, extracted, storage,
         source_label="interview_extract",
-        contributed_by="bodhi_auto",
+        contributed_by=AUTO_CONTRIB_MARKER,
     )

@@ -49,6 +49,7 @@ The system supports semantic search across documents.
 - Uploaded PDFs/DOCXs are parsed (`document_parser.py`), chunked, and embedded via `gemini-embedding-001`.
 - Vectors are stored in NeonDB using `pgvector`.
 - When an interview starts, relevant Company and Role context is retrieved, merged, and placed in the system prompt.
+- **Trust boundary (anti-poisoning):** retrieval (`search_similar_chunks`) serves only human/admin-uploaded documents. Chunks auto-summarized from candidate transcripts (tagged `contributed_by = 'bodhi_auto'`) are excluded, so a candidate cannot assert something in-interview and have it retrieved as "company intel" for future candidates. The auto-contribution writer (`extract_and_contribute`) is additionally disabled by default (`BODHI_RAG_AUTO_CONTRIBUTE`), stopping the loop at the source as well.
 
 ### 3a. JD-Driven Personalized Question Engine (`rag.py` + `topic_questions` table)
 Instead of asking the LLM to invent generic technical questions per interview, the
