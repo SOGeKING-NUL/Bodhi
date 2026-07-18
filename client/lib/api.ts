@@ -316,6 +316,7 @@ export const prepareInterview = (data: {
   interviewer_persona?: "bodhi" | "riya";
   demo_mode?: boolean;
   demo_phase?: string;
+  quick_demo?: boolean;
 }) =>
   request<InterviewPrepare>("/api/interviews/prepare", {
     method: "POST",
@@ -416,6 +417,7 @@ export const startInterviewStream = async (data: {
   interviewer_persona?: "bodhi" | "riya";
   demo_mode?: boolean;
   demo_phase?: string;
+  quick_demo?: boolean;
 }) => {
   const headers = await getAuthHeaders({ "Content-Type": "application/json" });
   

@@ -35,7 +35,7 @@ function MarqueeRow({
 }) {
   return (
     <div
-      className="relative overflow-hidden w-full border-b border-black/[0.04] bg-[#F7F5F3]"
+      className="relative overflow-hidden w-full border-b border-black/[0.04] bg-bodhi-bg"
       style={{
         maskImage:
           "linear-gradient(to right, transparent 0%, black 10%, black 90%, transparent 100%)",

@@ -165,7 +165,7 @@ function NavPanel({
   }, [libraryActive]);
 
   return (
-    <div className="flex h-full w-60 flex-col border-r border-neutral-200 bg-white">
+    <div className="flex h-full w-60 flex-col border-r border-bodhi-line bg-bodhi-surface">
       <div className="flex h-16 items-center gap-2.5 px-5">
         <span className="text-[15px] font-bold uppercase tracking-[0.2em] text-[#1a1a1a]">
           Bodhi
@@ -185,7 +185,7 @@ function NavPanel({
                   "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                   active
                     ? "bg-neutral-100 text-[#1a1a1a]"
-                    : "text-neutral-500 hover:bg-neutral-50 hover:text-[#1a1a1a]",
+                    : "text-neutral-500 hover:bg-black/[0.03] hover:text-[#1a1a1a]",
                 )}
               >
                 <node.icon
@@ -207,7 +207,7 @@ function NavPanel({
                   "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                   libraryActive
                     ? "text-[#1a1a1a]"
-                    : "text-neutral-500 hover:bg-neutral-50 hover:text-[#1a1a1a]",
+                    : "text-neutral-500 hover:bg-black/[0.03] hover:text-[#1a1a1a]",
                 )}
                 aria-expanded={openLibrary}
               >
@@ -226,7 +226,7 @@ function NavPanel({
               </button>
 
               {openLibrary && (
-                <div className="relative mt-1 ml-[22px] space-y-0.5 border-l border-neutral-200 pl-3">
+                <div className="relative mt-1 ml-[22px] space-y-0.5 border-l border-bodhi-line pl-3">
                   {node.children.map((child) => {
                     const active = matchActive(pathname, [child.href]);
                     const count = child.countKey ? counts[child.countKey] : undefined;
@@ -239,7 +239,7 @@ function NavPanel({
                           "relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors",
                           active
                             ? "bg-neutral-100 text-[#1a1a1a]"
-                            : "text-neutral-500 hover:bg-neutral-50 hover:text-[#1a1a1a]",
+                            : "text-neutral-500 hover:bg-black/[0.03] hover:text-[#1a1a1a]",
                         )}
                       >
                         {active && (
@@ -301,7 +301,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }, [pathname]);
 
   return (
-    <div className="min-h-screen bg-[#F8F9FB] text-[#1a1a1a]">
+    <div className="min-h-screen bg-bodhi-bg text-[#1a1a1a]">
       <aside className="fixed inset-y-0 left-0 z-30 hidden md:block">
         <Sidebar counts={counts} />
       </aside>
@@ -320,7 +320,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       )}
 
       <div className="md:pl-[304px]">
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-3 border-b border-neutral-200 bg-white/85 px-4 backdrop-blur-md sm:px-6 md:hidden">
+        <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-3 border-b border-bodhi-line bg-bodhi-surface/85 px-4 backdrop-blur-md sm:px-6 md:hidden">
           <div className="flex items-center gap-3">
             <button
               type="button"

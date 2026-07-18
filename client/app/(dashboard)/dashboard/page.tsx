@@ -253,7 +253,7 @@ export default function DashboardPage() {
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-neutral-200 bg-neutral-50/50 text-center text-sm text-neutral-400">
+              <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-bodhi-line bg-bodhi-bg/50 text-center text-sm text-neutral-400">
                 Complete a couple of interviews to see your score trend.
               </div>
             )}
@@ -313,7 +313,7 @@ export default function DashboardPage() {
         </div>
 
         {recent.length === 0 ? (
-          <div className="mt-5 flex flex-col items-center justify-center rounded-lg border border-dashed border-neutral-200 bg-neutral-50/50 px-6 py-12 text-center">
+          <div className="mt-5 flex flex-col items-center justify-center rounded-lg border border-dashed border-bodhi-line bg-bodhi-bg/50 px-6 py-12 text-center">
             <span className="flex h-11 w-11 items-center justify-center rounded-full bg-neutral-100 text-neutral-400">
               <InterviewIcon size={20} />
             </span>
@@ -406,7 +406,7 @@ function QuickLink({
   return (
     <Link
       href={href}
-      className="group flex items-center gap-3 rounded-lg border border-neutral-200 bg-white px-3.5 py-3 transition-colors hover:border-neutral-300 hover:bg-neutral-50"
+      className="group flex items-center gap-3 rounded-lg border border-bodhi-line bg-bodhi-surface px-3.5 py-3 transition-colors hover:border-neutral-300 hover:bg-black/[0.03]"
     >
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-neutral-900 text-white">
         <Icon size={16} />

@@ -90,7 +90,7 @@ export default function ResumesPage() {
                 name="file"
                 accept=".pdf,.docx"
                 disabled={uploading}
-                className="w-full cursor-pointer rounded-lg border border-neutral-200 bg-white px-3.5 py-2.5 text-sm text-neutral-600 transition-colors file:mr-3 file:rounded-md file:border-0 file:bg-[#1a1a1a] file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-black focus:border-neutral-400 focus:outline-none focus:ring-2 focus:ring-black/[0.06] disabled:opacity-50"
+                className="w-full cursor-pointer rounded-lg border border-bodhi-line bg-bodhi-surface px-3.5 py-2.5 text-sm text-neutral-600 transition-colors file:mr-3 file:rounded-md file:border-0 file:bg-[#1a1a1a] file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-black focus:border-neutral-400 focus:outline-none focus:ring-2 focus:ring-black/[0.06] disabled:opacity-50"
               />
               <Button type="submit" fullWidth loading={uploading}>
                 {uploading ? "Uploading & parsing…" : "Upload resume"}
@@ -100,7 +100,7 @@ export default function ResumesPage() {
             {userId && (
               <Link
                 href={`/interview?mode=option_a&user_id=${userId}`}
-                className="mt-4 flex items-center justify-center gap-2 rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm font-medium text-[#1a1a1a] transition-colors hover:bg-neutral-50"
+                className="mt-4 flex items-center justify-center gap-2 rounded-lg border border-bodhi-line bg-bodhi-surface px-4 py-2.5 text-sm font-medium text-[#1a1a1a] transition-colors hover:bg-black/[0.03]"
               >
                 Start resume-based interview
                 <ArrowRightIcon size={15} />
@@ -178,7 +178,7 @@ function ResumeProfileView({ profile }: { profile: CandidateProfile }) {
             {profile.experience.map((exp, i) => (
               <div
                 key={i}
-                className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-4"
+                className="rounded-lg border border-bodhi-line bg-bodhi-bg/60 p-4"
               >
                 <p className="text-sm font-semibold text-[#1a1a1a]">{exp.title}</p>
                 <p className="mt-0.5 text-xs text-neutral-500">
@@ -218,7 +218,7 @@ function ResumeProfileView({ profile }: { profile: CandidateProfile }) {
             {profile.projects.map((project, i) => (
               <div
                 key={i}
-                className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-4"
+                className="rounded-lg border border-bodhi-line bg-bodhi-bg/60 p-4"
               >
                 <p className="text-sm font-semibold text-[#1a1a1a]">
                   {project.name}

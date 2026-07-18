@@ -220,7 +220,7 @@ export default function ReportPage() {
           </div>
         </div>
 
-        <div className="mt-6 rounded-lg border border-neutral-200 bg-neutral-50/60 p-4">
+        <div className="mt-6 rounded-lg border border-bodhi-line bg-bodhi-bg/60 p-4">
           <p className="text-xs uppercase tracking-wider text-neutral-400">
             Hiring recommendation
           </p>

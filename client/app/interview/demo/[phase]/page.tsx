@@ -13,7 +13,7 @@ export default function DemoPhaseRedirect() {
   }, [phase, router]);
 
   return (
-    <div className="flex h-screen items-center justify-center bg-[#F8F9FB]">
+    <div className="flex h-screen items-center justify-center bg-bodhi-bg">
       <div className="text-center">
         <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
         <p className="text-sm text-neutral-500">Loading {phase} demo…</p>

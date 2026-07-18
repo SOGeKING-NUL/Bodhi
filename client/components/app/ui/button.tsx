@@ -13,18 +13,18 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const VARIANTS: Record<Variant, string> = {
   primary:
-    "bg-[#1a1a1a] text-white hover:bg-black border border-transparent shadow-sm",
+    "bg-bodhi-clay text-white hover:bg-bodhi-clay-dark border border-transparent shadow-sm",
   secondary:
-    "bg-white text-[#1a1a1a] border border-neutral-200 hover:bg-neutral-50 hover:border-neutral-300",
+    "bg-bodhi-surface text-[#1a1a1a] border border-bodhi-line hover:bg-[#F3EDE5] hover:border-[rgba(55,50,47,0.2)]",
   ghost:
-    "bg-transparent text-neutral-600 border border-transparent hover:bg-neutral-100 hover:text-[#1a1a1a]",
+    "bg-transparent text-neutral-600 border border-transparent hover:bg-black/[0.04] hover:text-[#1a1a1a]",
   danger:
-    "bg-white text-red-600 border border-red-200 hover:bg-red-50 hover:border-red-300",
+    "bg-bodhi-surface text-red-600 border border-red-200 hover:bg-red-50 hover:border-red-300",
 };
 
 const SIZES: Record<Size, string> = {
-  sm: "h-9 px-3.5 text-[13px] rounded-lg gap-1.5",
-  md: "h-10 px-5 text-sm rounded-lg gap-2",
+  sm: "h-9 px-4 text-[13px] rounded-full gap-1.5",
+  md: "h-10 px-6 text-sm rounded-full gap-2",
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(

@@ -31,6 +31,11 @@ export function useSeamlessAudio(
     if (!audioContextRef.current) {
       audioContextRef.current = new AudioContext()
     }
+    // Browsers create/leave AudioContext in "suspended" state unless resume()
+    // is explicitly called — playback schedules silently with no error otherwise.
+    if (audioContextRef.current.state === "suspended") {
+      audioContextRef.current.resume().catch(() => {})
+    }
     return audioContextRef.current
   }, [])
 

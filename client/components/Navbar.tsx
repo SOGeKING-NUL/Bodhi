@@ -144,7 +144,7 @@ export default function Navbar() {
                   {isLanding && (
                     <Link
                       href="/interview"
-                      className="h-[34px] px-5 hidden sm:flex items-center justify-center border border-[#0a0a0a]/20 text-[#0a0a0a] text-[11px] uppercase tracking-[0.05em] font-medium rounded-full transition-all duration-300 hover:border-[#0a0a0a]/40 hover:bg-black/[0.02] active:scale-95"
+                      className="h-[34px] px-5 hidden sm:flex items-center justify-center bg-bodhi-clay text-white text-[11px] uppercase tracking-[0.05em] font-medium rounded-full transition-all duration-300 hover:bg-bodhi-clay-dark active:scale-95"
                       style={{ fontFamily: "var(--font-inter)" }}
                     >
                       START PRACTICING
@@ -157,7 +157,7 @@ export default function Navbar() {
               ) : (
                 <SignInButton mode="modal">
                   <div
-                    className="h-[34px] px-5 hidden sm:flex items-center justify-center border border-[#0a0a0a]/20 text-[#0a0a0a] text-[11px] uppercase tracking-[0.05em] font-medium rounded-full transition-all duration-300 hover:border-[#0a0a0a]/40 hover:bg-black/[0.02] active:scale-95 cursor-pointer"
+                    className="h-[34px] px-5 hidden sm:flex items-center justify-center bg-bodhi-clay text-white text-[11px] uppercase tracking-[0.05em] font-medium rounded-full transition-all duration-300 hover:bg-bodhi-clay-dark active:scale-95 cursor-pointer"
                     style={{ fontFamily: "var(--font-inter)" }}
                   >
                     START PRACTICING
