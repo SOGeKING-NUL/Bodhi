@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import AppShell from "@/components/app/app-shell";
-import { PlayIcon } from "@/components/app/ui/icons";
+import { PlayIcon, SparkleIcon } from "@/components/app/ui/icons";
 import { Alert, Spinner } from "@/components/app/ui/feedback";
 import { Card } from "@/components/app/ui/card";
 import {
@@ -16,6 +16,7 @@ import { useInterviewAudio } from "@/hooks/useInterviewAudio";
 import { useProctoring } from "@/hooks/useProctoring";
 import { useSentimentAnalysis } from "@/hooks/useSentimentAnalysis";
 import { endInterview, prepareInterview } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 type Phase = "idle" | "listening" | "recording" | "processing" | "speaking" | "ended";
 
@@ -27,6 +28,7 @@ interface Turn {
 
 export default function InterviewPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [sessionId, setSessionId] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [interviewPhase, setInterviewPhase] = useState<string>("intro");
@@ -35,6 +37,9 @@ export default function InterviewPage() {
   const [formData, setFormData] = useState<InterviewFormData | null>(null);
   const [demoMode, setDemoMode] = useState(false);
   const [demoPhase, setDemoPhase] = useState("");
+  // Toggled by the "Just demo" button on the setup form; carried into the
+  // form's own Continue submit rather than auto-submitting on its own.
+  const [quickDemoActive, setQuickDemoActive] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState("");
 
   // Editor content is held in a ref (not state) so per-keystroke typing never
@@ -47,7 +52,7 @@ export default function InterviewPage() {
   const phaseRef = useRef<Phase>("idle");
   const sessionIdRef = useRef("");
   const handleFormSubmitRef = useRef<
-    (data: InterviewFormData, isDemoMode?: boolean, submitDemoPhase?: string) => void
+    (data: InterviewFormData, isDemoMode?: boolean, submitDemoPhase?: string, isQuickDemo?: boolean) => void
   >(() => {});
   const cleanupRef = useRef<() => void>(() => {});
 
@@ -86,12 +91,11 @@ export default function InterviewPage() {
   }, [phase, proctoring]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const rawMode = params.get("mode");
+    const rawMode = searchParams.get("mode");
     const mode = rawMode === "option_a" || rawMode === "resume" ? "option_a" : null;
-    const userId = params.get("user_id");
-    const isDemoMode = params.get("demo") === "true";
-    const urlPhase = params.get("phase");
+    const userId = searchParams.get("user_id");
+    const isDemoMode = searchParams.get("demo") === "true";
+    const urlPhase = searchParams.get("phase");
 
     if (isDemoMode && urlPhase) {
       setDemoMode(true);
@@ -124,12 +128,13 @@ export default function InterviewPage() {
         user_id: userId,
       }));
     }
-  }, []);
+  }, [searchParams]);
 
   const handleFormSubmit = async (
     data: InterviewFormData,
     isDemoMode = false,
     submitDemoPhase = "",
+    isQuickDemo = false,
   ) => {
     setFormData(data);
     setError("");
@@ -143,6 +148,7 @@ export default function InterviewPage() {
         interviewer_persona: data.interviewer_persona ?? "bodhi",
         demo_mode: isDemoMode,
         demo_phase: submitDemoPhase,
+        quick_demo: isQuickDemo,
       });
 
       const sid = res.session_id;
@@ -253,32 +259,63 @@ export default function InterviewPage() {
         <div className="mx-auto">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div className="min-w-0">
-              <h1 className="text-2xl font-semibold tracking-tight text-[#1a1a1a] sm:text-[28px]">
-                {demoMode
-                  ? `Demo: ${demoPhase.charAt(0).toUpperCase()}${demoPhase.slice(1)} phase`
-                  : "New mock interview"}
+              <h1 className="text-[26px] font-light tracking-[-0.03em] text-[#1a1a1a] sm:text-[30px]">
+                {demoMode ? (
+                  `Demo: ${demoPhase.charAt(0).toUpperCase()}${demoPhase.slice(1)} phase`
+                ) : (
+                  <>
+                    New{" "}
+                    <span
+                      className="italic"
+                      style={{ fontFamily: "var(--font-instrument-serif)" }}
+                    >
+                      mock interview
+                    </span>
+                  </>
+                )}
               </h1>
               <p className="mt-1.5 text-[15px] leading-relaxed text-neutral-500">
                 {demoMode
                   ? `Testing ${demoPhase} questions with GrowthX context.`
-                  : "A hands-free voice conversation. Speak naturally — your interviewer listens, responds, and adapts."}
+                  : quickDemoActive
+                    ? "Quick demo active — 1–2 questions per phase, so you can preview the flow fast. Fill in the form as usual, then hit Continue."
+                    : "A hands-free voice conversation. Speak naturally — your interviewer listens, responds, and adapts."}
               </p>
             </div>
             {!demoMode && (
-              <Link
-                href="/interview/demo"
-                className="flex shrink-0 items-center gap-1.5 text-sm font-medium text-neutral-500 transition-colors hover:text-[#1a1a1a]"
-              >
-                <PlayIcon size={15} />
-                Try phase demos
-              </Link>
+              <div className="flex shrink-0 items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => setQuickDemoActive((v) => !v)}
+                  aria-pressed={quickDemoActive}
+                  className={cn(
+                    "flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium transition-colors",
+                    quickDemoActive
+                      ? "bg-bodhi-clay/10 text-bodhi-clay border border-bodhi-clay/30"
+                      : "text-neutral-500 border border-transparent hover:text-[#1a1a1a]",
+                  )}
+                >
+                  <SparkleIcon size={15} />
+                  Just demo
+                </button>
+                <Link
+                  href="/interview/demo"
+                  className="flex shrink-0 items-center gap-1.5 text-sm font-medium text-neutral-500 transition-colors hover:text-[#1a1a1a]"
+                >
+                  <PlayIcon size={15} />
+                  Try phase demos
+                </Link>
+              </div>
             )}
           </div>
 
           {error && <div className="mt-6"><Alert type="error">{error}</Alert></div>}
 
           <Card className="mt-6 p-6 sm:p-7">
-            <InterviewSetupForm onSubmit={handleFormSubmit} loading={phase !== "idle"} />
+            <InterviewSetupForm
+              onSubmit={(data) => handleFormSubmit(data, false, "", quickDemoActive)}
+              loading={phase !== "idle"}
+            />
           </Card>
         </div>
       </AppShell>
@@ -294,7 +331,7 @@ export default function InterviewPage() {
             Setting up your session…
           </h2>
           <p className="mt-1 text-sm text-neutral-500">
-            {demoMode ? `Preparing the ${demoPhase} demo` : "Connecting your interviewer"}
+            {demoMode ? `Preparing the ${demoPhase} demo` : quickDemoActive ? "Preparing quick demo" : "Connecting your interviewer"}
           </p>
         </div>
       </AppShell>

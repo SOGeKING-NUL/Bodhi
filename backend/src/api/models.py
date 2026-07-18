@@ -116,6 +116,7 @@ class InterviewStartRequest(BaseModel):
     mode: Literal["standard", "option_a", "option_b", "mode_a", "mode_b"] = "standard"
     user_id: str | None = None   # required for option_a and option_b
     interviewer_persona: Literal["bodhi", "riya"] = "bodhi"
+    quick_demo: bool = False      # 1 Q + 1 followup per phase, full interview flow
 
 
 class InterviewStartResponse(BaseModel):

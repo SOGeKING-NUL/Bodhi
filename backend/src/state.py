@@ -28,6 +28,17 @@ DEMO_PHASE_CONFIG: dict[str, dict] = {
 }
 # Shorter sessions for demo/testing purposes
 
+# ── Quick demo mode configuration ──────────────────────────────────────────
+# 1 question per phase + at most 1 followup. Full interview in ~5 minutes.
+QUICK_DEMO_PHASE_CONFIG: dict[str, dict] = {
+    "intro":      {"target_questions": 1,  "max_questions": 2,  "target_minutes": 1},
+    "technical":  {"target_questions": 1,  "max_questions": 2,  "target_minutes": 2},
+    "behavioral": {"target_questions": 1,  "max_questions": 2,  "target_minutes": 2},
+    "dsa":        {"target_questions": 1,  "max_questions": 2,  "target_minutes": 2},
+    "project":    {"target_questions": 1,  "max_questions": 2,  "target_minutes": 2},
+    "wrapup":     {"target_questions": 1,  "max_questions": 1,  "target_minutes": 1},
+}
+
 
 class InterviewState(TypedDict, total=False):
     """LangGraph state for a single interview session.
@@ -73,3 +84,6 @@ class InterviewState(TypedDict, total=False):
     # ── Demo mode ──────────────────────────────────────────────────
     demo_mode: bool               # if True, phase is locked and no transitions allowed
     demo_phase: str               # the locked phase for demo mode
+
+    # ── Quick demo mode ───────────────────────────────────────────
+    quick_demo: bool              # if True, 1 Q + 1 followup per phase, full flow

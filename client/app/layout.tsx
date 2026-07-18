@@ -1,12 +1,15 @@
 import type React from "react";
 import type { Metadata } from "next";
-import { Inter, Instrument_Serif } from "next/font/google";
+import { Montserrat, Instrument_Serif } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import ClerkUserSync from "@/components/ClerkUserSync";
 import "./globals.css";
 import { SmoothScroll } from "@/components/smooth-scroll";
 
-const inter = Inter({
+// Kept the CSS variable named "--font-inter" (dozens of call sites reference
+// it) even though it now loads Montserrat — repointing what the token
+// resolves to was a 2-file change vs. a mechanical rename across ~8 files.
+const inter = Montserrat({
   subsets: ["latin"],
   variable: "--font-inter",
   display: "swap",

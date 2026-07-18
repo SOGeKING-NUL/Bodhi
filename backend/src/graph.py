@@ -11,7 +11,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from src.memory import build_cross_section_context, compact_phase
 from src.prompts import build_jd_targeted_prompt, build_resume_based_prompt, build_system_prompt
-from src.state import PHASE_CONFIG, InterviewState
+from src.state import PHASE_CONFIG, QUICK_DEMO_PHASE_CONFIG, InterviewState
 from src.tools import ALL_TOOLS
 
 log = logging.getLogger("bodhi.graph")
@@ -141,6 +141,32 @@ def _process_tool_results(state: InterviewState) -> dict:
             if q_count >= max_q:
                 updates["should_end"] = True
                 log.info(f"[GRAPH] Demo mode: reached max questions ({max_q}), ending session")
+
+        # In quick_demo mode, auto-transition after max questions per phase
+        if state.get("quick_demo", False):
+            qd_max = QUICK_DEMO_PHASE_CONFIG.get(phase, {}).get("max_questions", 2)
+            if q_count >= qd_max:
+                from src.state import PHASES
+                phase_idx = PHASES.index(phase) if phase in PHASES else -1
+                if phase_idx >= 0 and phase_idx < len(PHASES) - 1:
+                    # Force transition to the next phase
+                    next_phase = PHASES[phase_idx + 1]
+                    updates["current_phase"] = next_phase
+                    next_q = _pop_next_question(state, next_phase)
+                    updates["target_question"] = next_q
+                    updates["queued_questions"] = state.get("queued_questions", {})
+                    updates["phase_question_count"] = 0
+                    updates["phase_start_time"] = datetime.now(timezone.utc).isoformat()
+                    updates["pending_probe"] = ""
+                    from langchain_core.messages import HumanMessage
+                    updates["messages"] = [HumanMessage(content="[continue]")]
+                    log.info(f"[GRAPH] Quick demo: phase {phase} done ({q_count} Qs), → {next_phase}")
+                else:
+                    # Last phase — end the session
+                    updates["should_end"] = True
+                    from langchain_core.messages import HumanMessage
+                    updates["messages"] = [HumanMessage(content="[continue] The interview is now complete. Please provide a brief closing statement to the candidate and end the session. Do NOT ask any more questions.")]
+                    log.info(f"[GRAPH] Quick demo: final phase {phase} done, ending session")
 
         log.info(f"[GRAPH] Score: {composite} (A:{accuracy} D:{depth_score} C:{comm} Cf:{conf}) "
                  f"for {phase} Q{q_count}")
@@ -279,8 +305,11 @@ def build_interview_graph(llm, checkpointer=None):
         cross_context = build_cross_section_context(state.get("phase_memories", {}))
         pending_probe = state.get("pending_probe", "")
 
-        # Phase timing info for prompt
-        config = PHASE_CONFIG.get(phase, {})
+        # Phase timing info for prompt — quick_demo overrides standard budgets
+        if state.get("quick_demo", False):
+            config = QUICK_DEMO_PHASE_CONFIG.get(phase, {})
+        else:
+            config = PHASE_CONFIG.get(phase, {})
         q_count = state.get("phase_question_count", 0)
         target_q = config.get("target_questions", 5)
         max_q = config.get("max_questions", 7)
@@ -336,7 +365,7 @@ def build_interview_graph(llm, checkpointer=None):
         last_msg = state["messages"][-1] if state["messages"] else None
         if last_msg:
             content = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
-            if content.startswith("TRANSITION:"):
+            if content.startswith("TRANSITION:") or content == "[continue]":
                 return "compact"
         return "continue"
 

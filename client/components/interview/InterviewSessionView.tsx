@@ -2,7 +2,6 @@
 
 import { useEffect, useState, RefObject } from "react";
 import {
-  ActivityIcon,
   AlertIcon,
   ClockIcon,
   EndCallIcon,
@@ -10,7 +9,7 @@ import {
   MicIcon,
   MicOffIcon,
 } from "@/components/app/ui/icons";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Orb, type OrbAgentState } from "@/components/interview/Orb";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog,
@@ -66,6 +65,20 @@ interface InterviewSessionViewProps {
   interimTranscript?: string;
 }
 
+const ORB_COLORS: Record<string, [string, string]> = {
+  talking: ["#D97757", "#F2C4A8"],
+  listening: ["#E8A87C", "#F7DEC8"],
+  thinking: ["#C9B29B", "#EBDFD2"],
+  idle: ["#C9B29B", "#EBDFD2"],
+};
+
+function orbStateForPhase(phase: string): OrbAgentState {
+  if (phase === "speaking") return "talking";
+  if (phase === "listening" || phase === "recording") return "listening";
+  if (phase === "processing") return "thinking";
+  return null;
+}
+
 function MetricRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between text-xs">
@@ -111,7 +124,6 @@ export function InterviewSessionView({
 
   const personaName = interviewerPersona === "riya" ? "Riya" : "Bodhi";
   const isTechnicalPhase = interviewPhase === "technical";
-  const isAiActive = phase === "speaking" || (phase === "processing" && transcript.length > 0);
 
   const handleEditorChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const content = e.target.value;
@@ -133,14 +145,19 @@ export function InterviewSessionView({
   })();
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[#F8F9FB]">
-      <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-3">
+    <div className="flex h-screen flex-col overflow-hidden bg-bodhi-bg">
+      <header className="flex items-center justify-between border-b border-bodhi-line bg-bodhi-surface px-6 py-3">
         <div className="flex items-center gap-3">
-          <h1 className="text-base font-semibold text-[#1a1a1a]">{personaName}</h1>
-          <span className="rounded-md bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">
+          <h1
+            className="text-[19px] italic text-[#1a1a1a]"
+            style={{ fontFamily: "var(--font-instrument-serif)" }}
+          >
+            {personaName}
+          </h1>
+          <span className="rounded-full bg-black/[0.05] px-2.5 py-0.5 text-xs font-medium text-neutral-600">
             {phaseText}
           </span>
-          <span className="rounded-md bg-neutral-900 px-2 py-0.5 text-xs font-medium capitalize text-white">
+          <span className="rounded-full bg-bodhi-clay px-2.5 py-0.5 text-xs font-medium capitalize text-white">
             {interviewPhase}
           </span>
         </div>
@@ -160,7 +177,7 @@ export function InterviewSessionView({
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <aside className="flex w-[280px] flex-col gap-6 border-r border-neutral-200 bg-white p-6">
+        <aside className="flex w-[280px] flex-col gap-6 border-r border-bodhi-line bg-bodhi-surface p-6">
           <div className="space-y-3">
             <h3 className="text-sm font-semibold text-[#1a1a1a]">Session metrics</h3>
             <div className="flex items-center justify-between">
@@ -209,7 +226,7 @@ export function InterviewSessionView({
             </div>
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-100">
               <div
-                className="h-full rounded-full bg-[#1a1a1a] transition-all duration-500"
+                className="h-full rounded-full bg-bodhi-clay transition-all duration-500"
                 style={{ width: `${attentionScore}%` }}
               />
             </div>
@@ -305,38 +322,29 @@ export function InterviewSessionView({
 
         <div
           className={cn(
-            "relative flex border-l border-neutral-200 bg-white",
+            "relative flex border-l border-bodhi-line bg-bodhi-surface",
             isTechnicalPhase ? "w-[38%] flex-col" : "flex-1 flex-row",
           )}
         >
           <div
             className={cn(
-              "relative flex flex-1 flex-col items-center justify-center bg-neutral-50 p-6",
-              isTechnicalPhase ? "border-b border-neutral-200" : "border-r border-neutral-200",
+              "relative flex flex-1 flex-col items-center justify-center bg-bodhi-bg p-6",
+              isTechnicalPhase ? "border-b border-bodhi-line" : "border-r border-bodhi-line",
             )}
           >
-            <div className="relative">
-              {isAiActive && (
-                <>
-                  <div className="absolute inset-0 -m-8 rounded-full border-4 border-[#1a1a1a]/15 animate-siri-ring-1" />
-                  <div className="absolute inset-0 -m-6 rounded-full border-4 border-[#1a1a1a]/20 animate-siri-ring-2" />
-                  <div className="absolute inset-0 -m-4 rounded-full border-4 border-[#1a1a1a]/25 animate-siri-ring-3" />
-                </>
-              )}
-              <Avatar className="relative z-10 h-28 w-28 shadow-lg">
-                <AvatarFallback className="bg-[#1a1a1a] text-3xl font-semibold text-white">
-                  {interviewerPersona === "riya" ? "R" : "B"}
-                </AvatarFallback>
-              </Avatar>
-              {isAiActive && (
-                <div className="absolute -bottom-1 -right-1 z-20 animate-pulse rounded-full bg-emerald-500 p-2 shadow">
-                  <ActivityIcon size={16} className="text-white" />
-                </div>
-              )}
-            </div>
+            <Orb
+              className="h-48 w-48"
+              agentState={orbStateForPhase(phase)}
+              colors={ORB_COLORS[orbStateForPhase(phase) ?? "idle"]}
+            />
             <div className="absolute bottom-6 flex flex-col items-center gap-1.5">
-              <p className="text-sm font-semibold text-[#1a1a1a]">{personaName}</p>
-              <span className="rounded-md bg-neutral-100 px-2.5 py-0.5 text-xs font-medium text-neutral-600">
+              <p
+                className="text-[17px] italic text-[#1a1a1a]"
+                style={{ fontFamily: "var(--font-instrument-serif)" }}
+              >
+                {personaName}
+              </p>
+              <span className="rounded-full bg-black/[0.05] px-2.5 py-0.5 text-xs font-medium text-neutral-600">
                 Interviewer
               </span>
             </div>
@@ -377,13 +385,13 @@ export function InterviewSessionView({
             ) : (
               <div
                 className={cn(
-                  "absolute inset-0 flex flex-col items-center justify-center bg-neutral-100",
+                  "absolute inset-0 flex flex-col items-center justify-center bg-bodhi-bg",
                   isUserSpeaking && "ring-4 ring-inset ring-emerald-400/70",
                 )}
               >
                 <div
                   className={cn(
-                    "mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-neutral-200 transition-colors",
+                    "mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-black/[0.06] transition-colors",
                     isUserSpeaking && "bg-emerald-100",
                   )}
                 >
@@ -422,7 +430,7 @@ export function InterviewSessionView({
             onClick={() => setIsMicOn(!isMicOn)}
             className={cn(
               "flex h-14 w-14 items-center justify-center rounded-full shadow-xl transition-all hover:scale-105",
-              isMicOn ? "bg-white text-[#1a1a1a]" : "bg-red-600 text-white",
+              isMicOn ? "bg-bodhi-surface text-[#1a1a1a]" : "bg-red-600 text-white",
             )}
             aria-label={isMicOn ? "Mute microphone" : "Unmute microphone"}
           >
@@ -439,7 +447,7 @@ export function InterviewSessionView({
       </div>
 
       <AlertDialog open={showEndConfirm} onOpenChange={setShowEndConfirm}>
-        <AlertDialogContent className="border border-neutral-200 bg-white">
+        <AlertDialogContent className="border border-bodhi-line bg-bodhi-surface">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-[#1a1a1a]">End interview session?</AlertDialogTitle>
             <AlertDialogDescription className="text-neutral-500">

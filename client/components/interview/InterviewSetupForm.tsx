@@ -89,7 +89,7 @@ function OptionCard({
         "flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-all",
         active
           ? "border-[#1a1a1a] bg-[#1a1a1a] text-white"
-          : "border-neutral-200 bg-white text-[#1a1a1a] hover:border-neutral-300",
+          : "border-bodhi-line bg-bodhi-surface text-[#1a1a1a] hover:border-neutral-300",
       )}
     >
       <div
@@ -129,7 +129,7 @@ function PersonaCard({
         "flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-all",
         active
           ? "border-[#1a1a1a] bg-[#1a1a1a] text-white"
-          : "border-neutral-200 bg-white text-[#1a1a1a] hover:border-neutral-300",
+          : "border-bodhi-line bg-bodhi-surface text-[#1a1a1a] hover:border-neutral-300",
       )}
     >
       <div
@@ -156,7 +156,7 @@ function ResumeSummary({
   onChange?: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-4">
+    <div className="rounded-lg border border-bodhi-line bg-bodhi-bg/60 p-4">
       <div className="flex items-center justify-between">
         <p className="flex items-center gap-1.5 text-sm font-medium text-[#1a1a1a]">
           <CheckIcon size={15} className="text-emerald-600" />
@@ -399,7 +399,7 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
             accept=".pdf,.docx"
             onChange={handleResumeUpload}
             disabled={uploading}
-            className="w-full cursor-pointer rounded-lg border border-neutral-200 bg-white px-3.5 py-2.5 text-sm text-neutral-600 file:mr-3 file:rounded-md file:border-0 file:bg-[#1a1a1a] file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-black focus:border-neutral-400 focus:outline-none focus:ring-2 focus:ring-black/[0.06] disabled:opacity-50"
+            className="w-full cursor-pointer rounded-lg border border-bodhi-line bg-bodhi-surface px-3.5 py-2.5 text-sm text-neutral-600 file:mr-3 file:rounded-md file:border-0 file:bg-[#1a1a1a] file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-black focus:border-neutral-400 focus:outline-none focus:ring-2 focus:ring-black/[0.06] disabled:opacity-50"
           />
           {uploading && (
             <p className="flex items-center gap-2 text-xs text-neutral-500">
@@ -514,7 +514,7 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
                 </button>
               </div>
               {uploadedProfile && (
-                <p className="rounded-lg border border-neutral-200 bg-neutral-50/60 px-3 py-2 text-xs text-neutral-600">
+                <p className="rounded-lg border border-bodhi-line bg-bodhi-bg/60 px-3 py-2 text-xs text-neutral-600">
                   Using your resume profile ({uploadedProfile.name} ·{" "}
                   {uploadedProfile.skills?.length || 0} skills) for a JD-targeted interview.
                 </p>

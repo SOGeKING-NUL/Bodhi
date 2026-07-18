@@ -421,6 +421,7 @@ async def prepare_interview(
         "gap_map": gap_map,
         "clerk_user_id": user_id,
         "user_profile_id": resolved_user_profile_id,
+        "quick_demo": body.quick_demo,
     }
     
     if cache:
@@ -1582,6 +1583,7 @@ async def start_interview_stream(
         "candidate_profile": candidate_profile,
         "jd_context": jd_context,
         "gap_map": gap_map,
+        "quick_demo": body.quick_demo,
     }
 
     _stream_log.info("[START-STREAM] Session %s: invoking graph for greeting...", session_id)
