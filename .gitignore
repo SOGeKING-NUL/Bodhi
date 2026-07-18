@@ -13,3 +13,5 @@ node_modules/
 # *.md
 *.pt
 src
+# vendored orb prototype (Orb ported into client/components/interview)
+new_client_implemntation/
