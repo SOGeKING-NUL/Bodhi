@@ -3,7 +3,7 @@ import { useAuth } from "@clerk/nextjs"
 import { useSeamlessAudio } from "./useSeamlessAudio"
 import type { SentimentMeta } from "@/lib/api"
 
-const SILENCE_THRESHOLD = 0.015
+const SILENCE_THRESHOLD = 0.050
 const BARGE_CONFIRM_FRAMES = 3
 const TARGET_SAMPLE_RATE = 16000
 

@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 
 const CONTROL =
-  "w-full rounded-lg border border-bodhi-line bg-white px-3.5 py-2.5 text-sm text-[#1a1a1a] placeholder:text-neutral-400 transition-colors focus:outline-none focus:border-bodhi-clay/50 focus:ring-2 focus:ring-bodhi-clay/10 disabled:opacity-50 disabled:cursor-not-allowed";
+  "w-full rounded-lg border border-bodhi-line bg-bodhi-surface px-3.5 py-3 text-sm text-[#1a1a1a] placeholder:text-neutral-400 shadow-[inset_0_1px_2px_rgba(55,50,47,0.03)] transition-all focus:outline-none focus:border-bodhi-clay/50 focus:ring-4 focus:ring-bodhi-clay/[0.08] disabled:opacity-50 disabled:cursor-not-allowed";
 
 export function Label({
   children,
@@ -19,11 +19,14 @@ export function Label({
 }: LabelHTMLAttributes<HTMLLabelElement> & { required?: boolean }) {
   return (
     <label
-      className={cn("block text-[13px] font-medium text-neutral-700", className)}
+      className={cn(
+        "block text-[11px] font-semibold uppercase tracking-[0.06em] text-neutral-500",
+        className,
+      )}
       {...props}
     >
       {children}
-      {required && <span className="text-red-500"> *</span>}
+      {required && <span className="text-bodhi-clay"> *</span>}
     </label>
   );
 }
@@ -43,11 +46,26 @@ export const Textarea = forwardRef<
 ));
 Textarea.displayName = "Textarea";
 
+// Native select arrows render inconsistently (and look dated) across
+// browsers/OSes, so we hide it and paint our own chevron via background-image.
+const SELECT_CHEVRON_STYLE = {
+  backgroundImage:
+    "url(\"data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23a1a1aa' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e\")",
+  backgroundPosition: "right 0.75rem center",
+  backgroundRepeat: "no-repeat",
+  backgroundSize: "1.25em 1.25em",
+};
+
 export const Select = forwardRef<
   HTMLSelectElement,
   SelectHTMLAttributes<HTMLSelectElement>
->(({ className, children, ...props }, ref) => (
-  <select ref={ref} className={cn(CONTROL, "cursor-pointer", className)} {...props}>
+>(({ className, children, style, ...props }, ref) => (
+  <select
+    ref={ref}
+    className={cn(CONTROL, "cursor-pointer appearance-none pr-10", className)}
+    style={{ ...SELECT_CHEVRON_STYLE, ...style }}
+    {...props}
+  >
     {children}
   </select>
 ));
@@ -67,7 +85,7 @@ export function Field({
   children: ReactNode;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <Label htmlFor={htmlFor} required={required}>
         {label}
       </Label>

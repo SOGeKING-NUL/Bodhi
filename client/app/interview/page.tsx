@@ -311,7 +311,7 @@ export default function InterviewPage() {
 
           {error && <div className="mt-6"><Alert type="error">{error}</Alert></div>}
 
-          <Card className="mt-6 p-6 sm:p-7">
+          <Card className="mt-6 p-6 sm:p-8">
             <InterviewSetupForm
               onSubmit={(data) => handleFormSubmit(data, false, "", quickDemoActive)}
               loading={phase !== "idle"}

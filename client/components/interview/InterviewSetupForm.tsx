@@ -86,15 +86,15 @@ function OptionCard({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-all",
+        "flex flex-col items-center gap-2 rounded-xl border p-5 text-center transition-all",
         active
-          ? "border-[#1a1a1a] bg-[#1a1a1a] text-white"
-          : "border-bodhi-line bg-bodhi-surface text-[#1a1a1a] hover:border-neutral-300",
+          ? "border-[#1a1a1a] bg-[#1a1a1a] text-white shadow-[0_8px_20px_-6px_rgba(26,26,26,0.35)]"
+          : "border-bodhi-line bg-bodhi-surface text-[#1a1a1a] shadow-[0_1px_2px_rgba(55,50,47,0.03)] hover:border-neutral-300 hover:shadow-[0_4px_16px_-4px_rgba(55,50,47,0.12)]",
       )}
     >
       <div
         className={cn(
-          "flex h-9 w-9 items-center justify-center rounded-full",
+          "flex h-10 w-10 items-center justify-center rounded-full",
           active ? "bg-white/15" : "bg-neutral-100",
         )}
       >
@@ -126,15 +126,15 @@ function PersonaCard({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-all",
+        "flex flex-col items-center gap-2 rounded-xl border p-5 text-center transition-all",
         active
-          ? "border-[#1a1a1a] bg-[#1a1a1a] text-white"
-          : "border-bodhi-line bg-bodhi-surface text-[#1a1a1a] hover:border-neutral-300",
+          ? "border-[#1a1a1a] bg-[#1a1a1a] text-white shadow-[0_8px_20px_-6px_rgba(26,26,26,0.35)]"
+          : "border-bodhi-line bg-bodhi-surface text-[#1a1a1a] shadow-[0_1px_2px_rgba(55,50,47,0.03)] hover:border-neutral-300 hover:shadow-[0_4px_16px_-4px_rgba(55,50,47,0.12)]",
       )}
     >
       <div
         className={cn(
-          "flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold",
+          "flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold",
           active ? "bg-white/15 text-white" : "bg-neutral-100 text-neutral-600",
         )}
       >
@@ -399,7 +399,7 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
             accept=".pdf,.docx"
             onChange={handleResumeUpload}
             disabled={uploading}
-            className="w-full cursor-pointer rounded-lg border border-bodhi-line bg-bodhi-surface px-3.5 py-2.5 text-sm text-neutral-600 file:mr-3 file:rounded-md file:border-0 file:bg-[#1a1a1a] file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-black focus:border-neutral-400 focus:outline-none focus:ring-2 focus:ring-black/[0.06] disabled:opacity-50"
+            className="w-full cursor-pointer rounded-lg border border-bodhi-line bg-bodhi-surface px-3.5 py-3 text-sm text-neutral-600 shadow-[inset_0_1px_2px_rgba(55,50,47,0.03)] file:mr-3 file:rounded-md file:border-0 file:bg-[#1a1a1a] file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-black focus:border-neutral-400 focus:outline-none focus:ring-4 focus:ring-black/[0.06] disabled:opacity-50"
           />
           {uploading && (
             <p className="flex items-center gap-2 text-xs text-neutral-500">
@@ -573,7 +573,7 @@ export function InterviewSetupForm({ onSubmit, loading }: InterviewSetupFormProp
         </>
       )}
 
-      <div className="space-y-2">
+      <div className="space-y-2 border-t border-bodhi-line pt-6">
         <Label>Choose interviewer</Label>
         <div className="grid grid-cols-2 gap-3">
           <PersonaCard
