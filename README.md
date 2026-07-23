@@ -29,20 +29,17 @@ Bodhi isn't just a chatbot; it's a fully integrated interview environment.
 ### 1. Integrated Code Editor
 When Bodhi asks a coding or Data Structures/Algorithms (DSA) question, an interactive text editor dynamically opens, allowing you to write code while explaining your thought process naturally.
 
-> **[🎥 Insert Text Editor Snippet Here]**
-> *(Placeholder: `assets/feature_editor.gif`)*
+
 
 ### 2. Real-Time Proctoring & Behavioral Analysis
 Our computer-vision pipeline monitors the candidate at 1 FPS. If a user looks away, opens another tab, or uses a phone, Bodhi's proctoring system flags the violation and updates the candidate's trust rating instantly.
 
-> **[🎥 Insert Proctoring Snippet Here]**
-> *(Placeholder: `assets/feature_proctoring.gif`)*
+
 
 ### 3. Dynamic Interview Flow & Cross-Questioning
 Bodhi isn't scripted. It gracefully transitions between Intro, Technical, Behavioral, and DSA phases. If an answer is vague, the AI actively challenges the candidate with targeted follow-up questions.
 
-> **[🎥 Insert Dynamic Flow Snippet Here]**
-> *(Placeholder: `assets/feature_flow.gif`)*
+
 
 ---
 
@@ -50,8 +47,7 @@ Bodhi isn't scripted. It gracefully transitions between Intro, Technical, Behavi
 
 At the end of the session, Bodhi generates a rigorous, multi-dimensional performance report. It grades candidates across four axes: Accuracy, Depth, Communication, and Confidence, culminating in an agentic hiring recommendation.
 
-> **[🖼️ Insert Final Report Image Here]**
-> *(Placeholder: `assets/report_sample.png`)*
+
 
 ---
 
