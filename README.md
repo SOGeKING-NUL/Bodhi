@@ -6,7 +6,7 @@
 
 ---
 
-## 🚀 See Bodhi in Action (Demo)
+## 🚀 See Bodhi in Action (Demo) [CLICK TO WATCH]
 
 *Watch the end-to-end interview flow, from introduction to the final technical deep-dive.*
 
