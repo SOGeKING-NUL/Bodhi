@@ -61,56 +61,6 @@ export default function DemoVideoSection() {
           Two minutes from resume upload to a live voice interview — no scripts, no buttons.
         </p>
       </div>
-
-      {/* Standalone Video centerpiece */}
-      <div className="max-w-[1000px] mx-auto mb-24 md:mb-32 flex justify-center px-2">
-        <div
-          className="group relative w-full rounded-3xl border border-[rgba(55,50,47,0.22)] bg-bodhi-surface p-3 shadow-[0_45px_100px_rgba(55,50,47,0.15)] transition-all duration-700 hover:scale-[1.01] hover:rotate-0"
-          style={{ transform: "rotate(-1deg)" }}
-        >
-          <div
-            className="relative aspect-video w-full overflow-hidden rounded-2xl"
-            style={{
-              background:
-                "radial-gradient(ellipse at 50% 40%, #3d332c 0%, #241f1a 65%, #17130f 100%)",
-            }}
-          >
-            {/* Center Play Button Overlay */}
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-10 pointer-events-none transition-transform duration-500 group-hover:scale-105">
-              <div
-                className="h-16 w-16 md:h-20 md:w-20 rounded-full opacity-90 flex items-center justify-center text-white transition-all duration-500 group-hover:shadow-[0_0_60px_rgba(217,119,87,0.7)] group-hover:opacity-100"
-                style={{
-                  background:
-                    "radial-gradient(circle at 35% 30%, #F2C4A8 0%, #D97757 55%, #C4643F 100%)",
-                  boxShadow: "0 0 50px rgba(217,119,87,0.45)",
-                }}
-              >
-                <Play className="w-6 h-6 md:w-8 md:h-8 fill-white ml-1 text-white" />
-              </div>
-              <p
-                className="text-[12px] tracking-[0.08em] uppercase text-white/40 font-medium"
-                style={{ fontFamily: "var(--font-inter)" }}
-              >
-                Demo film
-              </p>
-            </div>
-
-            {/* Ambient Background Light Glow behind Video */}
-            <div className="absolute -inset-10 bg-radial-gradient from-bodhi-clay/20 to-transparent blur-2xl opacity-50 group-hover:opacity-75 transition-opacity duration-700 pointer-events-none" />
-
-            <video
-              className="absolute inset-0 h-full w-full object-cover opacity-80 mix-blend-screen"
-              src="/how-it-works.mp4"
-              poster="/how-it-works-poster.jpg"
-              autoPlay
-              muted
-              loop
-              playsInline
-            />
-          </div>
-        </div>
-      </div>
-
       {/* Single Bento Box — 4 steps, one bordered container, sharp corners, internal dividers */}
       <div
         className="max-w-[1100px] mx-auto flex flex-col border border-[rgba(55,50,47,0.22)] bg-bodhi-surface shadow-[0_20px_60px_rgba(55,50,47,0.06)]"
