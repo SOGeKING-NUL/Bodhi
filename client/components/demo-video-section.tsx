@@ -61,6 +61,34 @@ export default function DemoVideoSection() {
           Two minutes from resume upload to a live voice interview — no scripts, no buttons.
         </p>
       </div>
+
+      {/* Standalone Video centerpiece */}
+      <div className="max-w-[1000px] mx-auto mb-24 md:mb-32 flex justify-center px-2">
+        <div
+          className="group relative w-full rounded-3xl border border-[rgba(55,50,47,0.22)] bg-bodhi-surface p-3 shadow-[0_45px_100px_rgba(55,50,47,0.15)] transition-all duration-700 hover:scale-[1.01] hover:rotate-0"
+          style={{ transform: "rotate(-1deg)" }}
+        >
+          <div
+            className="relative aspect-video w-full overflow-hidden rounded-2xl"
+            style={{
+              background:
+                "radial-gradient(ellipse at 50% 40%, #3d332c 0%, #241f1a 65%, #17130f 100%)",
+            }}
+          >
+            {/* Ambient Background Light Glow behind Video */}
+            <div className="absolute -inset-10 bg-radial-gradient from-bodhi-clay/20 to-transparent blur-2xl opacity-50 group-hover:opacity-75 transition-opacity duration-700 pointer-events-none" />
+
+            <iframe
+              className="absolute inset-0 h-full w-full z-10"
+              src="https://www.youtube.com/embed/tvwdEFT3wSc?rel=0"
+              title="Bodhi Demo Video"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+            ></iframe>
+          </div>
+        </div>
+      </div>
+
       {/* Single Bento Box — 4 steps, one bordered container, sharp corners, internal dividers */}
       <div
         className="max-w-[1100px] mx-auto flex flex-col border border-[rgba(55,50,47,0.22)] bg-bodhi-surface shadow-[0_20px_60px_rgba(55,50,47,0.06)]"

@@ -10,8 +10,7 @@
 
 *Watch the end-to-end interview flow, from introduction to the final technical deep-dive.*
 
-> **[🎥 Insert Primary Demo Video Here]**
-> *(Placeholder: `assets/demo_video.mp4`)*
+[![Bodhi Demo Video](https://img.youtube.com/vi/tvwdEFT3wSc/maxresdefault.jpg)](https://www.youtube.com/watch?v=tvwdEFT3wSc)
 
 ---
 
